@@ -61,11 +61,12 @@ class TestSlideTitles(unittest.TestCase):
 		)
 		self.document = _object(
 			powerpnt.DocumentWindow,
+			windowHandle=1,
 			ppActivePaneViewType=powerpnt.ppViewSlide,
 		)
 		self.slide = _object(powerpnt.Slide, ppObject=self.ppSlide, documentWindow=self.document)
 		self.document.currentSlide = self.slide
-		self.window = _object(powerpnt.SlideShowWindow, currentSlide=self.slide, notesMode=False)
+		self.window = _object(powerpnt.SlideShowWindow, windowHandle=1, currentSlide=self.slide, notesMode=False)
 
 	def test_slideNameLabelsTitleWithoutParentheses(self) -> None:
 		self.assertEqual(self.slide.name, "Slide 1 - Slide title: Παράδειγμα")
@@ -370,6 +371,7 @@ class TestPowerPointObjectModelSelection(unittest.TestCase):
 		)
 		document = _object(
 			powerpnt.DocumentWindow,
+			windowHandle=1,
 			ppActivePaneViewType=powerpnt.ppViewNotesPage,
 			ppDocumentViewType=powerpnt.ppViewNormal,
 			ppVersionMajor=16,
@@ -663,6 +665,31 @@ class TestPowerPointLayoutFeedback(unittest.TestCase):
 			self.assertNotIn(powerpnt.controlTypes.State.HASNOTE, slide._get_states())
 
 
+class TestPowerPointCharts(unittest.TestCase):
+	def test_chartTypeAndDescriptionAreAvailableWithoutActivatingTheChart(self) -> None:
+		shape = _object(
+			powerpnt.ChartShape,
+			ppObject=SimpleNamespace(
+				chart=SimpleNamespace(hasTitle=True, chartTitle=SimpleNamespace(text="Revenue"), chartType=5),
+				alternativeText="Revenue by region",
+			),
+		)
+		with (
+			patch.object(powerpnt, "chartTypeDict", {5: "Pie"}),
+			patch.object(powerpnt.ChartShape, "chart", new_callable=PropertyMock) as chart,
+		):
+			self.assertEqual(shape.name, "Revenue")
+			self.assertEqual(shape.roleText, "Pie chart")
+			self.assertEqual(shape.description, "Revenue by region")
+			chart.assert_not_called()
+
+	def test_unknownChartTypeKeepsTheGenericChartRole(self) -> None:
+		shape = _object(powerpnt.ChartShape, ppObject=SimpleNamespace(chart=SimpleNamespace(chartType=-1)))
+		with patch.object(powerpnt, "chartTypeDict", {}):
+			self.assertIsNone(shape.roleText)
+		self.assertEqual(shape.role, powerpnt.controlTypes.Role.CHART)
+
+
 class TestSlideShowLocations(unittest.TestCase):
 	setUp = TestSlideTitles.setUp
 
@@ -713,6 +740,9 @@ class TestSlideShowLocations(unittest.TestCase):
 			range.characters.assert_called_with(4, 1)
 			info._getBoundingRectFromOffset(text.index("1. "))
 			range.characters.assert_called_with(1, 1)
+			self.window.basicText = text + "\nnext"
+			info._getBoundingRectFromOffset(len(text))
+			range.characters.assert_called_with(4, 1)
 			convert.assert_called_with(10, 20, 30, 40)
 
 	def test_graphicDescriptionUsesItsShapeRectangle(self) -> None:

@@ -40,7 +40,7 @@ from NVDAObjects import NVDAObjectTextInfo
 from NVDAObjects.behaviors import EditableText, EditableTextWithoutAutoSelectDetection
 from NVDAObjects.IAccessible import IAccessible
 from NVDAObjects.window import Window
-from NVDAObjects.window._msOfficeChart import OfficeChart
+from NVDAObjects.window._msOfficeChart import OfficeChart, chartTypeDict
 from speech import sayAll
 from treeInterceptorHandler import DocumentTreeInterceptor
 from utils.urlUtils import _LinkData
@@ -1147,10 +1147,17 @@ class ChartShape(Shape):
 	"""
 
 	def _get_name(self):
-		chartObj = self.chart.officeChartObject
+		chartObj = self.ppObject.chart
 		if chartObj.hasTitle:
 			return chartObj.chartTitle.text
 		return super().name
+
+	def _get_roleText(self):
+		chartType = chartTypeDict.get(self.ppObject.chart.chartType)
+		if chartType:
+			# Translators: The type of a chart in Microsoft PowerPoint, such as "Pie chart".
+			return _("{chartType} chart").format(chartType=chartType)
+		return None
 
 	role = controlTypes.Role.CHART
 

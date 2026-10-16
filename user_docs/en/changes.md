@@ -44,8 +44,9 @@
 * In Microsoft PowerPoint, NVDA no longer reads the slide title twice. (#9379, @ChristosBouronikos)
 * When editing tables in Microsoft PowerPoint, NVDA reports headers according to the table's Header Row and First Column settings, and supports moving between cells with `control+alt+arrow keys`. (#19063, #5350, @ChristosBouronikos)
 * PowerPoint slide-show text locations are now available for visual highlighting and magnifier tracking. (#15461, #20290, @ChristosBouronikos)
-* PowerPoint shape location reports include width and height and use the Windows measurement system. Resizing shapes with a locked aspect ratio reports all four edges, and rotation shortcuts report the angle. (#10366, #8144, #10449, #10434, @ChristosBouronikos)
+* PowerPoint shape location reports include width and height and use the Windows measurement system. Resizing shapes with a locked aspect ratio reports all four edges, and rotation shortcuts report the angle. (#10366, #8144, #8024, #10449, #10434, @ChristosBouronikos)
 * PowerPoint slides report when they have speaker notes or are hidden from the slide show. (#8049, #10949, @ChristosBouronikos)
+* When tabbing to a chart in PowerPoint, NVDA reports its chart type without activating the chart. (#8021, @ChristosBouronikos)
   * The slide title is now announced with a "Slide title" label, and the rest of the slide is introduced with "Slide contents".
 * Fixed an issue where formulas and notes were not listed in Excel's elements list when it was opened from a sheet with multiple cells selected. (#20806, @CyrilleB79)
 * In Microsoft Word accessed via UI Automation, NVDA no longer fails to report the text of a comment with the report comment command (`NVDA+alt+c`) and in the Elements List (`NVDA+f7`). (#14985, #4336, @LeonarddeR)
