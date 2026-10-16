@@ -1913,6 +1913,10 @@ For further information about Browse mode and single letter navigation, see the 
 | Name |Key |Description|
 |---|---|---|
 |Toggle speaker notes reading |control+shift+s |When in a running slide show, this command will toggle between the speaker notes for the slide and the content for the slide. This only affects what NVDA reads, not what is displayed on screen.|
+|Move to next row |control+alt+downArrow |When editing a table cell, moves the text cursor to the next row.|
+|Move to previous row |control+alt+upArrow |When editing a table cell, moves the text cursor to the previous row.|
+|Move to next column |control+alt+rightArrow |When editing a table cell, moves the text cursor to the next column.|
+|Move to previous column |control+alt+leftArrow |When editing a table cell, moves the text cursor to the previous column.|
 
 <!-- KC:endInclude -->
 

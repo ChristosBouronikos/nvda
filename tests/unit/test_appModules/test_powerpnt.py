@@ -763,3 +763,68 @@ class TestSlideShowLocations(unittest.TestCase):
 		with self.assertRaises(LookupError) as caught:
 			info._getBoundingRectFromOffset(0)
 		self.assertIsInstance(caught.exception.__cause__, comtypes.COMError)
+
+
+class TestPowerPointTables(unittest.TestCase):
+	def setUp(self) -> None:
+		self.ppTable = SimpleNamespace(
+			firstRow=True,
+			firstCol=True,
+			rows=SimpleNamespace(count=3),
+			columns=SimpleNamespace(count=3),
+			cell=Mock(
+				return_value=SimpleNamespace(
+					shape=SimpleNamespace(textFrame=SimpleNamespace(textRange=Mock(text="Header\r"))),
+				),
+			),
+		)
+		self.table = _object(powerpnt.Table, ppObject=SimpleNamespace(table=self.ppTable))
+		self.cell = _object(powerpnt.TableCell, table=self.table, rowNumber=2, columnNumber=2)
+		self.document = Mock()
+		self.frame = _object(powerpnt.TableCellTextFrame, parent=self.cell, documentWindow=self.document)
+
+	def test_rowHeaderUsesTheFirstColumnOfTheCurrentRow(self) -> None:
+		self.assertEqual(self.cell.rowHeaderText, "Header")
+		self.ppTable.cell.assert_called_once_with(2, 1)
+
+	def test_columnHeaderUsesTheFirstRowOfTheCurrentColumn(self) -> None:
+		self.assertEqual(self.cell.columnHeaderText, "Header")
+		self.ppTable.cell.assert_called_once_with(1, 2)
+
+	def test_formatFlagsControlHeaderReporting(self) -> None:
+		self.ppTable.firstRow = self.ppTable.firstCol = False
+		self.assertIsNone(self.cell.rowHeaderText)
+		self.assertIsNone(self.cell.columnHeaderText)
+		self.ppTable.cell.assert_not_called()
+
+	def test_headerCellRoles(self) -> None:
+		self.cell.rowNumber = 1
+		self.assertEqual(self.cell.role, powerpnt.controlTypes.Role.TABLECOLUMNHEADER)
+		self.cell.rowNumber, self.cell.columnNumber = 2, 1
+		self.assertEqual(self.cell.role, powerpnt.controlTypes.Role.TABLEROWHEADER)
+
+	def test_tableNavigationSelectsAnInsertionPointNotTheCellText(self) -> None:
+		self.frame._moveTableCell(1, 0)
+		self.ppTable.cell.assert_called_once_with(3, 2)
+		self.ppTable.cell.return_value.shape.textFrame.textRange.characters.assert_called_once_with(1, 0)
+		self.ppTable.cell.return_value.shape.textFrame.textRange.characters.return_value.select.assert_called_once_with()
+		self.document.handleSelectionChange.assert_called_once_with()
+
+	def test_navigationAtEdgeDoesNotChangeSelection(self) -> None:
+		self.cell.rowNumber = 3
+		with patch.object(powerpnt.ui, "message") as message:
+			self.frame._moveTableCell(1, 0)
+		message.assert_called_once_with("edge of table")
+		self.ppTable.cell.assert_not_called()
+		self.document.handleSelectionChange.assert_not_called()
+
+	def test_tableNavigationScriptsUseTheExpectedAxis(self) -> None:
+		for script, delta in [
+			("nextRow", (1, 0)),
+			("previousRow", (-1, 0)),
+			("nextColumn", (0, 1)),
+			("previousColumn", (0, -1)),
+		]:
+			with self.subTest(script=script), patch.object(self.frame, "_moveTableCell") as move:
+				getattr(self.frame, f"script_{script}")(None)
+				move.assert_called_once_with(*delta)

@@ -1400,7 +1400,23 @@ class TableCell(PpObject):
 	"""Represents a table cell in Powerpoint. Accepts a table and a row and column number as this cannot be calculated directly."""
 
 	name = None
-	role = controlTypes.Role.TABLECELL
+
+	def _get_role(self):
+		if self.rowNumber == 1 and self.table.ppTable.firstRow:
+			return controlTypes.Role.TABLECOLUMNHEADER
+		if self.columnNumber == 1 and self.table.ppTable.firstCol:
+			return controlTypes.Role.TABLEROWHEADER
+		return controlTypes.Role.TABLECELL
+
+	def _get_rowHeaderText(self):
+		if self.columnNumber > 1 and self.table.ppTable.firstCol:
+			return self.table.ppTable.cell(self.rowNumber, 1).shape.textFrame.textRange.text.strip()
+		return None
+
+	def _get_columnHeaderText(self):
+		if self.rowNumber > 1 and self.table.ppTable.firstRow:
+			return self.table.ppTable.cell(1, self.columnNumber).shape.textFrame.textRange.text.strip()
+		return None
 
 	def _isEqual(self, other):
 		return self.table == other.table and (self.columnNumber, self.rowNumber) == (
@@ -1469,9 +1485,61 @@ class TableCellTextFrame(TextFrame):
 	def _isEqual(self, other):
 		return self.parent == other.parent
 
+	def _moveTableCell(self, rowDelta: int, columnDelta: int) -> None:
+		cell = self.parent
+		table = cell.table
+		row = cell.rowNumber + rowDelta
+		column = cell.columnNumber + columnDelta
+		if not (1 <= row <= table.rowCount and 1 <= column <= table.columnCount):
+			# Translators: Reported when attempting to move beyond the edge of a table.
+			ui.message(_("edge of table"))
+			return
+		try:
+			table.ppTable.cell(row, column).shape.textFrame.textRange.characters(1, 0).select()
+		except comtypes.COMError:
+			log.debugWarning("Could not select a PowerPoint table cell", exc_info=True)
+			return
+		self.documentWindow.handleSelectionChange()
+
+	@scriptHandler.script(
+		# Translators: A command for navigating a table in Microsoft PowerPoint.
+		description=_("Moves to the next row"),
+		category=SCRCAT_POWERPOINT,
+	)
+	def script_nextRow(self, gesture):
+		self._moveTableCell(1, 0)
+
+	@scriptHandler.script(
+		# Translators: A command for navigating a table in Microsoft PowerPoint.
+		description=_("Moves to the previous row"),
+		category=SCRCAT_POWERPOINT,
+	)
+	def script_previousRow(self, gesture):
+		self._moveTableCell(-1, 0)
+
+	@scriptHandler.script(
+		# Translators: A command for navigating a table in Microsoft PowerPoint.
+		description=_("Moves to the next column"),
+		category=SCRCAT_POWERPOINT,
+	)
+	def script_nextColumn(self, gesture):
+		self._moveTableCell(0, 1)
+
+	@scriptHandler.script(
+		# Translators: A command for navigating a table in Microsoft PowerPoint.
+		description=_("Moves to the previous column"),
+		category=SCRCAT_POWERPOINT,
+	)
+	def script_previousColumn(self, gesture):
+		self._moveTableCell(0, -1)
+
 	__gestures = {  # noqa: RUF012
 		"kb:tab": "selectionChange",
 		"kb:shift+tab": "selectionChange",
+		"kb:control+alt+downArrow": "nextRow",
+		"kb:control+alt+upArrow": "previousRow",
+		"kb:control+alt+rightArrow": "nextColumn",
+		"kb:control+alt+leftArrow": "previousColumn",
 	}
 
 
