@@ -29,6 +29,7 @@ import ui
 import winUser
 from comtypes.automation import IDispatch
 from controlTypes import TextPosition
+from controlTypes.formatFields import TextAlign
 from cursorManager import ReviewCursorManager
 from displayModel import DisplayModelTextInfo, EditableTextDisplayModelTextInfo
 from locationHelper import RectLTRB, RectLTWH
@@ -100,6 +101,17 @@ class ppEApplicationSink(comtypes.COMObject):
 
 # Bullet types
 ppBulletNumbered = 2
+
+# PpParagraphAlignment, as exposed by ParagraphFormat.Alignment.
+ppParagraphAlignmentToTextAlign = {
+	1: TextAlign.LEFT,
+	2: TextAlign.CENTER,
+	3: TextAlign.RIGHT,
+	4: TextAlign.JUSTIFY,
+	5: TextAlign.DISTRIBUTE,
+	6: TextAlign.DISTRIBUTE,
+	7: TextAlign.JUSTIFY,
+}
 
 # media types
 ppVideo = 3
@@ -1137,10 +1149,7 @@ class TextFrameTextInfo(textInfos.offsets.OffsetsTextInfo):
 		:raises ValueError: If the start index is greater than the end index.
 		"""
 		if not (start <= end):
-			raise ValueError(
-				f"start must be less than or equal to end. Got {start=}, {end=}.",
-				stack_info=True,
-			)
+			raise ValueError(f"start must be less than or equal to end. Got {start=}, {end=}.")
 		maxLength = self._getStoryLength()
 		# Having start = maxLength does not make sense, as there will be no selection if this is the case.
 		if not (0 <= start < maxLength) and clamp:
@@ -1163,7 +1172,7 @@ class TextFrameTextInfo(textInfos.offsets.OffsetsTextInfo):
 		:param end: The ending character index (zero based) of the text range.
 		:returns: The text content of the specified text range, with newline characters normalized.
 		"""
-		return self._getPptTextRange(start, end).text.replace("\x0b", "\n")
+		return self._getPptTextRange(start, end).text.replace("\x0b", "\n").replace("\r", "\n")
 
 	def _getStoryLength(self) -> int:
 		return self.obj.ppObject.textRange.length
@@ -1249,19 +1258,30 @@ class TextFrameTextInfo(textInfos.offsets.OffsetsTextInfo):
 		formatField = textInfos.FormatField()
 		curRun = None
 		if calculateOffsets:
-			curRun, startOffset, endOffset = self._getCurrentRun(self)
+			curRun, startOffset, endOffset = self._getCurrentRun(offset)
 		if not curRun:
-			curRun = self.obj.ppObject.textRange.characters(offset + 1)
+			curRun = self.obj.ppObject.textRange.characters(offset + 1, 1)
 			startOffset, endOffset = offset, self._endOffset
-		if (
-			self._startOffset == 0
-			or offset == self._startOffset
-			and self._getTextRange(offset - 1, offset).startswith("\n")
-		):
-			b = curRun.paragraphFormat.bullet
+		# A font run can span several paragraphs with different bullets or alignments.
+		paragraphIndex, paragraphStart, paragraphEnd = self._getOffsets(
+			self.obj.ppObject.textRange.paragraphs(),
+			offset,
+		)
+		paragraph = self.obj.ppObject.textRange.paragraphs(paragraphIndex + 1, 1)
+		paragraphFormat = paragraph.paragraphFormat
+		if calculateOffsets:
+			startOffset = max(startOffset, paragraphStart)
+			endOffset = min(endOffset, paragraphEnd)
+		if offset == paragraphStart:
+			b = paragraphFormat.bullet
 			bulletText = getBulletText(b)
 			if bulletText:
 				formatField["line-prefix"] = bulletText
+				formatField["line-prefix_speakAlways"] = True
+		if formatConfig.get("reportAlignment"):
+			alignment = ppParagraphAlignmentToTextAlign.get(paragraphFormat.alignment)
+			if alignment is not None:
+				formatField["text-align"] = alignment
 		font = curRun.font
 		if formatConfig["reportFontName"]:
 			formatField["font-name"] = font.name
@@ -1288,9 +1308,11 @@ class TextFrameTextInfo(textInfos.offsets.OffsetsTextInfo):
 	def _getLinkDataAtCaretPosition(self) -> _LinkData | None:
 		offset = self._getCaretOffset()
 		curRun, _startOffset, _endOffset = self._getCurrentRun(offset)
+		if curRun is None:
+			return None
 		mouseClickSetting = curRun.actionSettings(ppMouseClick)
 		if mouseClickSetting.action == ppActionHyperlink:
-			return textInfos._LinkData(
+			return _LinkData(
 				displayText=mouseClickSetting.Hyperlink.TextToDisplay,
 				destination=mouseClickSetting.Hyperlink.Address,
 			)

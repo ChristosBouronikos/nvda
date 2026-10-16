@@ -36,6 +36,7 @@
 
 #### Applications
 
+* In Microsoft PowerPoint, paragraph alignment is now included in formatting reports, and bullets and numbering are taken from the current paragraph rather than a font run spanning several paragraphs. (#20915, #4021, #17309, #10357, @ChristosBouronikos)
 * In Microsoft PowerPoint, NVDA no longer reads the slide title twice. (#9379, @ChristosBouronikos)
   * The slide title is now announced with a "Slide title" label, and the rest of the slide is introduced with "Slide contents".
 * Fixed an issue where formulas and notes were not listed in Excel's elements list when it was opened from a sheet with multiple cells selected. (#20806, @CyrilleB79)

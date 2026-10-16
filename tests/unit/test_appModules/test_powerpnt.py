@@ -199,7 +199,9 @@ class TestSlideTitles(unittest.TestCase):
 		self.window._lastSlideChangeID = None
 		with (
 			patch.object(
-				powerpnt.SlideShowWindow, "treeInterceptor", new_callable=PropertyMock
+				powerpnt.SlideShowWindow,
+				"treeInterceptor",
+				new_callable=PropertyMock,
 			) as treeInterceptor,
 			patch.object(powerpnt.SlideShowWindow, "currentSlide", new_callable=PropertyMock) as currentSlide,
 			patch.object(powerpnt.SlideShowWindow, "reportFocus") as reportFocus,
@@ -223,3 +225,126 @@ class TestSlideTitles(unittest.TestCase):
 		)
 		self.bodyShape.textFrame.textRange.paragraphs = Mock(return_value=[paragraph])
 		self.assertTrue(self.window.basicText.endswith("2. First\nSecond"))
+
+
+class TestTextFrameFormatting(unittest.TestCase):
+	def setUp(self) -> None:
+		self.text = "First\rSecond\x0bline\rThird"
+		self.paragraphs = [
+			SimpleNamespace(
+				start=start,
+				length=len(text),
+				text=text,
+				paragraphFormat=SimpleNamespace(
+					alignment=alignment,
+					bullet=SimpleNamespace(type=powerpnt.ppBulletNumbered, number=number),
+				),
+			)
+			for start, text, alignment, number in [
+				(1, "First\r", 1, 1),
+				(7, "Second\x0bline\r", 2, 2),
+				(19, "Third", 3, 3),
+			]
+		]
+		self.run = SimpleNamespace(start=1, length=len(self.text), font=SimpleNamespace())
+		self.textRange = Mock(length=len(self.text))
+		self.textRange.runs.return_value = [self.run]
+		self.textRange.paragraphs.side_effect = lambda *args: (
+			self.paragraphs[args[0] - 1] if args else self.paragraphs
+		)
+		self.textRange.characters.side_effect = lambda start, length=1: SimpleNamespace(
+			text=self.text[start - 1 : start - 1 + length],
+			font=self.run.font,
+		)
+		self.frame = _object(powerpnt.TextFrame, ppObject=SimpleNamespace(textRange=self.textRange))
+		self.info = _object(
+			powerpnt.TextFrameTextInfo,
+			obj=self.frame,
+			_startOffset=0,
+			_endOffset=len(self.text),
+		)
+		self.formatConfig = dict.fromkeys(
+			[
+				"reportFontName",
+				"reportFontSize",
+				"fontAttributeReporting",
+				"reportSuperscriptsAndSubscripts",
+				"reportColor",
+				"reportLinks",
+				"reportAlignment",
+			],
+			False,
+		)
+
+	def test_formattingUsesNumericOffsetAndStopsAtParagraphBoundary(self) -> None:
+		field, bounds = self.info._getFormatFieldAndOffsets(6, self.formatConfig)
+		self.assertEqual(bounds, (6, 18))
+		self.assertEqual(field["line-prefix"], "2.")
+		self.assertTrue(field["line-prefix_speakAlways"])
+
+	def test_sameFontRunReportsTheCorrectNumberForEveryParagraph(self) -> None:
+		for offset, number in [(0, 1), (6, 2), (18, 3)]:
+			with self.subTest(offset=offset):
+				field, _bounds = self.info._getFormatFieldAndOffsets(offset, self.formatConfig)
+				self.assertEqual(field["line-prefix"], f"{number}.")
+
+	def test_bulletIsNotRepeatedInMiddleOfParagraphOrAfterSoftLineBreak(self) -> None:
+		for offset in (2, 13):
+			with self.subTest(offset=offset):
+				field, _bounds = self.info._getFormatFieldAndOffsets(offset, self.formatConfig)
+				self.assertNotIn("line-prefix", field)
+
+	def test_alignmentIsReadFromTheCurrentParagraph(self) -> None:
+		self.formatConfig["reportAlignment"] = True
+		for offset, alignment in [(0, "left"), (6, "center"), (18, "right")]:
+			with self.subTest(offset=offset):
+				field, _bounds = self.info._getFormatFieldAndOffsets(offset, self.formatConfig)
+				self.assertEqual(field["text-align"], alignment)
+
+	def test_allPowerPointAlignmentsAndUnknownValues(self) -> None:
+		self.formatConfig["reportAlignment"] = True
+		for value, alignment in [(4, "justify"), (5, "distribute"), (6, "distribute"), (7, "justify")]:
+			with self.subTest(value=value):
+				self.paragraphs[0].paragraphFormat.alignment = value
+				field, _bounds = self.info._getFormatFieldAndOffsets(0, self.formatConfig)
+				self.assertEqual(field["text-align"], alignment)
+		for value in (-2, 0, 99):
+			with self.subTest(value=value):
+				self.paragraphs[0].paragraphFormat.alignment = value
+				field, _bounds = self.info._getFormatFieldAndOffsets(0, self.formatConfig)
+				self.assertNotIn("text-align", field)
+
+	def test_alignmentReportingCanBeDisabled(self) -> None:
+		field, _bounds = self.info._getFormatFieldAndOffsets(6, self.formatConfig)
+		self.assertNotIn("text-align", field)
+
+	def test_formattingWithoutCalculatingRunsStillUsesCurrentParagraph(self) -> None:
+		field, _bounds = self.info._getFormatFieldAndOffsets(18, self.formatConfig, calculateOffsets=False)
+		self.assertEqual(field["line-prefix"], "3.")
+		self.textRange.runs.assert_not_called()
+		self.textRange.characters.assert_called_once_with(19, 1)
+
+	def test_textRangeNormalizesParagraphAndSoftLineBreaks(self) -> None:
+		self.assertEqual(self.info._getTextRange(0, len(self.text)), "First\nSecond\nline\nThird")
+
+	def test_invalidRangeRaisesValueError(self) -> None:
+		with self.assertRaises(ValueError):
+			self.info._getPptTextRange(5, 2)
+
+	def test_linkAtCaretWithoutAFormattingRunReturnsNone(self) -> None:
+		self.info.obj.documentWindow = SimpleNamespace(
+			ppSelection=SimpleNamespace(textRange=SimpleNamespace(start=len(self.text) + 1)),
+		)
+		self.assertIsNone(self.info._getLinkDataAtCaretPosition())
+
+	def test_linkDataUsesTheSharedLinkType(self) -> None:
+		self.info.obj.documentWindow = SimpleNamespace(
+			ppSelection=SimpleNamespace(textRange=SimpleNamespace(start=1)),
+		)
+		self.run.actionSettings = lambda activation: SimpleNamespace(
+			action=powerpnt.ppActionHyperlink,
+			Hyperlink=SimpleNamespace(TextToDisplay="NV Access", Address="https://www.nvaccess.org"),
+		)
+		link = self.info._getLinkDataAtCaretPosition()
+		self.assertEqual(link.displayText, "NV Access")
+		self.assertEqual(link.destination, "https://www.nvaccess.org")
