@@ -610,6 +610,7 @@ class TestPowerPointLayoutFeedback(unittest.TestCase):
 	def test_lockedAspectRatioResizeReportsBothAxes(self) -> None:
 		gesture = Mock(modifierNames=["shift"])
 		with (
+			patch.object(powerpnt.ui, "message"),
 			patch.object(powerpnt.scriptHandler, "isScriptWaiting", return_value=False),
 			patch.object(powerpnt.Shape, "_getOverlapText", return_value=""),
 			patch.object(powerpnt.Shape, "_getShapeLocationText", return_value="") as location,
@@ -623,6 +624,7 @@ class TestPowerPointLayoutFeedback(unittest.TestCase):
 	def test_ordinaryMoveStillReportsOnlyTheMovedAxis(self) -> None:
 		gesture = Mock(modifierNames=[])
 		with (
+			patch.object(powerpnt.ui, "message"),
 			patch.object(powerpnt.scriptHandler, "isScriptWaiting", return_value=False),
 			patch.object(powerpnt.Shape, "_getOverlapText", return_value=""),
 			patch.object(powerpnt.Shape, "_getShapeLocationText", return_value="") as location,
@@ -826,6 +828,7 @@ class TestPowerPointTables(unittest.TestCase):
 		self.cell.rowNumber = 1
 		self.assertEqual(self.cell.role, powerpnt.controlTypes.Role.TABLECOLUMNHEADER)
 		self.cell.rowNumber, self.cell.columnNumber = 2, 1
+		self.cell.invalidateCache()
 		self.assertEqual(self.cell.role, powerpnt.controlTypes.Role.TABLEROWHEADER)
 
 	def test_tableNavigationSelectsAnInsertionPointNotTheCellText(self) -> None:
