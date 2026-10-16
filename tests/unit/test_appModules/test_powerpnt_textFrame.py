@@ -28,9 +28,15 @@ class TestTextFrameTextInfo(unittest.TestCase):
 			font=SimpleNamespace(),
 			paragraphFormat=SimpleNamespace(bullet=SimpleNamespace(type=0)),
 		)
+		paragraph = SimpleNamespace(
+			start=1,
+			length=len(self.text),
+			paragraphFormat=self.run.paragraphFormat,
+		)
 		self.textRange = SimpleNamespace(
 			length=len(self.text),
 			runs=lambda: [self.run],
+			paragraphs=lambda *args: paragraph if args else [paragraph],
 			characters=lambda start, length: SimpleNamespace(
 				text=self.text[start - 1 : start - 1 + length],
 				font=self.run.font,
@@ -47,6 +53,7 @@ class TestTextFrameTextInfo(unittest.TestCase):
 				"reportSuperscriptsAndSubscripts",
 				"reportColor",
 				"reportLinks",
+				"reportAlignment",
 			],
 			False,
 		)
