@@ -66,7 +66,12 @@ class TestSlideTitles(unittest.TestCase):
 		)
 		self.slide = _object(powerpnt.Slide, ppObject=self.ppSlide, documentWindow=self.document)
 		self.document.currentSlide = self.slide
-		self.window = _object(powerpnt.SlideShowWindow, windowHandle=1, currentSlide=self.slide, notesMode=False)
+		self.window = _object(
+			powerpnt.SlideShowWindow,
+			windowHandle=1,
+			currentSlide=self.slide,
+			notesMode=False,
+		)
 
 	def test_slideNameLabelsTitleWithoutParentheses(self) -> None:
 		self.assertEqual(self.slide.name, "Slide 1 - Slide title: Παράδειγμα")
