@@ -563,6 +563,113 @@ class TestTextFrameFormatting(unittest.TestCase):
 		self.assertEqual(link.destination, "https://www.nvaccess.org")
 
 
+class TestPowerPointLayoutFeedback(unittest.TestCase):
+	def setUp(self) -> None:
+		self.shape = _object(
+			powerpnt.Shape,
+			ppObject=SimpleNamespace(width=72, height=144, rotation=15, lockAspectRatio=-1),
+		)
+
+	def test_distancesUseWindowsMeasurementSystem(self) -> None:
+		with patch.object(powerpnt.languageHandler, "useImperialMeasurements", return_value=True):
+			self.assertEqual(powerpnt.getDistanceText(72), "1 inch")
+			self.assertEqual(powerpnt.getDistanceText(144), "2 inches")
+		with patch.object(powerpnt.languageHandler, "useImperialMeasurements", return_value=False):
+			self.assertEqual(powerpnt.getDistanceText(72), "2.54 centimetres")
+			self.assertEqual(powerpnt.getDistanceText(0), "0 centimetres")
+
+	def test_locationQueryIncludesWidthAndHeight(self) -> None:
+		with (
+			patch.object(powerpnt.languageHandler, "useImperialMeasurements", return_value=True),
+			patch.object(powerpnt.Shape, "_getOverlapText", return_value=""),
+			patch.object(powerpnt.Shape, "_getShapeLocationText", return_value=""),
+		):
+			self.assertEqual(self.shape.locationText, "width 1 inch, height 2 inches")
+
+	def test_edgeAndOverlapFeedbackUseTheSameLocalUnits(self) -> None:
+		self.shape._edgeDistances = (72, 144, -36, 0)
+		self.shape._overlapInfo = (
+			None,
+			{
+				"otherIsBehind": False,
+				"label": "rectangle",
+				"overlapsOtherLeftBy": 72,
+				"overlapsOtherTopBy": 0,
+				"overlapsOtherRightBy": 0,
+				"overlapsOtherBottomBy": 0,
+			},
+		)
+		with patch.object(powerpnt.languageHandler, "useImperialMeasurements", return_value=True):
+			self.assertEqual(self.shape._getOverlapText(), "behind left of rectangle by 1 inch")
+			self.assertEqual(
+				self.shape._getShapeLocationText(True, True, True, True),
+				"Off right slide edge by 0.5 inches, 1 inch from left slide edge, "
+				"2 inches from top slide edge, 0 inches from bottom slide edge",
+			)
+
+	def test_lockedAspectRatioResizeReportsBothAxes(self) -> None:
+		gesture = Mock(modifierNames=["shift"])
+		with (
+			patch.object(powerpnt.scriptHandler, "isScriptWaiting", return_value=False),
+			patch.object(powerpnt.Shape, "_getOverlapText", return_value=""),
+			patch.object(powerpnt.Shape, "_getShapeLocationText", return_value="") as location,
+		):
+			self.shape.script_moveHorizontal(gesture)
+			location.assert_called_with(left=True, right=True, top=True, bottom=True)
+			self.shape.script_moveVertical(gesture)
+			location.assert_called_with(top=True, bottom=True, left=True, right=True)
+		self.assertEqual(gesture.send.call_count, 2)
+
+	def test_ordinaryMoveStillReportsOnlyTheMovedAxis(self) -> None:
+		gesture = Mock(modifierNames=[])
+		with (
+			patch.object(powerpnt.scriptHandler, "isScriptWaiting", return_value=False),
+			patch.object(powerpnt.Shape, "_getOverlapText", return_value=""),
+			patch.object(powerpnt.Shape, "_getShapeLocationText", return_value="") as location,
+		):
+			self.shape.script_moveHorizontal(gesture)
+			location.assert_called_once_with(left=True, right=True, top=False, bottom=False)
+
+	def test_rotationReadsTheAngleAfterSendingTheNativeShortcut(self) -> None:
+		gesture = Mock()
+		gesture.send.side_effect = lambda: setattr(self.shape.ppObject, "rotation", 30)
+		with (
+			patch.object(powerpnt.scriptHandler, "isScriptWaiting", return_value=False),
+			patch.object(powerpnt.ui, "message") as message,
+		):
+			self.shape.script_rotate(gesture)
+		gesture.send.assert_called_once_with()
+		message.assert_called_once_with("rotation 30 degrees")
+
+	def test_hiddenSlideDescriptionDoesNotMakeTheObjectInvisible(self) -> None:
+		slide = _object(
+			powerpnt.Slide,
+			ppObject=SimpleNamespace(slideShowTransition=SimpleNamespace(hidden=-1)),
+		)
+		self.assertEqual(slide.description, "hidden slide")
+		slide.ppObject.slideShowTransition.hidden = 0
+		slide.invalidateCache()
+		self.assertIsNone(slide.description)
+
+	def test_onlyNonEmptyNotesAddHasNoteState(self) -> None:
+		frame = SimpleNamespace(textRange=SimpleNamespace(text="Speaker notes\r"))
+		slide = _object(powerpnt.Slide, ppObject=SimpleNamespace())
+		with (
+			patch.object(
+				powerpnt.Window,
+				"states",
+				new_callable=PropertyMock,
+				return_value=set(),
+				create=True,
+			),
+			patch.object(powerpnt, "getNotesTextFrame", return_value=frame),
+		):
+			self.assertIn(powerpnt.controlTypes.State.HASNOTE, slide._get_states())
+			frame.textRange.text = "\r "
+			slide.invalidateCache()
+			self.assertNotIn(powerpnt.controlTypes.State.HASNOTE, slide._get_states())
+
+
 class TestSlideShowLocations(unittest.TestCase):
 	setUp = TestSlideTitles.setUp
 
