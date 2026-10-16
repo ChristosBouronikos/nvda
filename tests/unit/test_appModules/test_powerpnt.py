@@ -670,6 +670,31 @@ class TestPowerPointLayoutFeedback(unittest.TestCase):
 			self.assertNotIn(powerpnt.controlTypes.State.HASNOTE, slide._get_states())
 
 
+class TestPowerPointCharts(unittest.TestCase):
+	def test_chartTypeAndDescriptionAreAvailableWithoutActivatingTheChart(self) -> None:
+		shape = _object(
+			powerpnt.ChartShape,
+			ppObject=SimpleNamespace(
+				chart=SimpleNamespace(hasTitle=True, chartTitle=SimpleNamespace(text="Revenue"), chartType=5),
+				alternativeText="Revenue by region",
+			),
+		)
+		with (
+			patch.object(powerpnt, "chartTypeDict", {5: "Pie"}),
+			patch.object(powerpnt.ChartShape, "chart", new_callable=PropertyMock) as chart,
+		):
+			self.assertEqual(shape.name, "Revenue")
+			self.assertEqual(shape.roleText, "Pie chart")
+			self.assertEqual(shape.description, "Revenue by region")
+			chart.assert_not_called()
+
+	def test_unknownChartTypeKeepsTheGenericChartRole(self) -> None:
+		shape = _object(powerpnt.ChartShape, ppObject=SimpleNamespace(chart=SimpleNamespace(chartType=-1)))
+		with patch.object(powerpnt, "chartTypeDict", {}):
+			self.assertIsNone(shape.roleText)
+		self.assertEqual(shape.role, powerpnt.controlTypes.Role.CHART)
+
+
 class TestSlideShowLocations(unittest.TestCase):
 	setUp = TestSlideTitles.setUp
 
