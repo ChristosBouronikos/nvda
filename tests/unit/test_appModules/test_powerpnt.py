@@ -561,3 +561,98 @@ class TestTextFrameFormatting(unittest.TestCase):
 		link = self.info._getLinkDataAtCaretPosition()
 		self.assertEqual(link.displayText, "NV Access")
 		self.assertEqual(link.destination, "https://www.nvaccess.org")
+
+
+class TestSlideShowLocations(unittest.TestCase):
+	setUp = TestSlideTitles.setUp
+
+	def test_slideRectangleFitsLetterboxedWindowOnAnotherMonitor(self) -> None:
+		self.window.ppObjectModel = SimpleNamespace(
+			presentation=SimpleNamespace(pageSetup=SimpleNamespace(slideWidth=960, slideHeight=540)),
+		)
+		with (
+			patch.object(powerpnt.winUser, "getClientRect", return_value=powerpnt.RectLTRB(0, 0, 1200, 900)),
+			patch.object(powerpnt.winUser, "ClientToScreen", return_value=(-1200, 100)),
+		):
+			self.assertEqual(
+				self.window.slideRectToScreen(96, 54, 192, 108),
+				powerpnt.RectLTRB(-1080, 280, -840, 415),
+			)
+
+	def test_invalidViewportDoesNotReturnFabricatedCoordinates(self) -> None:
+		self.window.ppObjectModel = SimpleNamespace(
+			presentation=SimpleNamespace(pageSetup=SimpleNamespace(slideWidth=960, slideHeight=540)),
+		)
+		with (
+			patch.object(powerpnt.winUser, "getClientRect", return_value=powerpnt.RectLTRB(0, 0, 0, 0)),
+			patch.object(powerpnt.winUser, "ClientToScreen", return_value=(0, 0)),
+			self.assertRaises(LookupError),
+		):
+			self.window.slideRectToScreen(0, 0, 10, 10)
+
+	def test_textLocationsAccountForLabelsBulletsAndUtf16Offsets(self) -> None:
+		range = Mock(text="A😀B\r", boundLeft=10, boundTop=20, boundWidth=30, boundHeight=40)
+		range.characters.return_value = range
+		paragraph = range
+		paragraph.paragraphFormat.bullet.type = powerpnt.ppBulletNumbered
+		paragraph.paragraphFormat.bullet.number = 1
+		self.bodyShape.textFrame.textRange.paragraphs = lambda: [paragraph]
+		text = self.window.basicText
+		info = _object(
+			powerpnt.SlideShowTreeInterceptorTextInfo,
+			obj=SimpleNamespace(rootNVDAObject=self.window),
+		)
+		with patch.object(
+			powerpnt.SlideShowWindow,
+			"slideRectToScreen",
+			return_value="screenRect",
+		) as convert:
+			self.assertEqual(info._getBoundingRectFromOffset(text.index("😀")), "screenRect")
+			range.characters.assert_called_with(2, 2)
+			info._getBoundingRectFromOffset(text.index("B", text.index("Slide contents")))
+			range.characters.assert_called_with(4, 1)
+			info._getBoundingRectFromOffset(text.index("1. "))
+			range.characters.assert_called_with(1, 1)
+			self.window.basicText = text + "\nnext"
+			info._getBoundingRectFromOffset(len(text))
+			range.characters.assert_called_with(4, 1)
+			convert.assert_called_with(10, 20, 30, 40)
+
+	def test_graphicDescriptionUsesItsShapeRectangle(self) -> None:
+		shape = SimpleNamespace(left=10, top=20, width=100, height=80)
+		chunk = powerpnt._SlideTextChunk("Diagram", shape)
+		self.window.basicText = "Diagram"
+		self.window.basicTextLocations = [(0, 7, chunk)]
+		info = _object(
+			powerpnt.SlideShowTreeInterceptorTextInfo,
+			obj=SimpleNamespace(rootNVDAObject=self.window),
+		)
+		with patch.object(
+			powerpnt.SlideShowWindow,
+			"slideRectToScreen",
+			return_value="screenRect",
+		) as convert:
+			self.assertEqual(info._getBoundingRectFromOffset(3), "screenRect")
+			convert.assert_called_once_with(10, 20, 100, 80)
+
+	def test_virtualSectionLabelHasNoOnScreenRectangle(self) -> None:
+		text = self.window.basicText
+		info = _object(
+			powerpnt.SlideShowTreeInterceptorTextInfo,
+			obj=SimpleNamespace(rootNVDAObject=self.window),
+		)
+		with self.assertRaises(LookupError):
+			info._getBoundingRectFromOffset(text.index("Slide contents"))
+
+	def test_providerFailureBecomesLocationUnavailable(self) -> None:
+		range = Mock(text="text")
+		range.characters.side_effect = comtypes.COMError(-1, "Unavailable", None)
+		self.window.basicText = "text"
+		self.window.basicTextLocations = [(0, 4, powerpnt._SlideTextChunk("text", self.bodyShape, range))]
+		info = _object(
+			powerpnt.SlideShowTreeInterceptorTextInfo,
+			obj=SimpleNamespace(rootNVDAObject=self.window),
+		)
+		with self.assertRaises(LookupError) as caught:
+			info._getBoundingRectFromOffset(0)
+		self.assertIsInstance(caught.exception.__cause__, comtypes.COMError)

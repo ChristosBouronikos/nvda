@@ -1474,7 +1474,37 @@ class SlideShowTreeInterceptorTextInfo(NVDAObjectTextInfo):
 	def _get_boundingRects(self) -> list[RectLTWH]:
 		if self.obj.rootNVDAObject.hasIrrelevantLocation:
 			raise LookupError("Object is off screen, invisible or has no location")
-		return [self.obj.rootNVDAObject.location]
+		return textInfos.offsets.OffsetsTextInfo._get_boundingRects(self)
+
+	def _getBoundingRectFromOffset(self, offset: int) -> RectLTRB:
+		root = self.obj.rootNVDAObject
+		# Building the text also establishes the source ranges for its chunks.
+		text = root.basicText
+		for start, end, chunk in root.basicTextLocations:
+			# Expanded line ranges include the separator after the source text.
+			if not (start <= offset < end or (offset == end and text[offset : offset + 1] == "\n")):
+				continue
+			try:
+				if chunk.textRange is not None:
+					sourceText = chunk.textRange.text
+					index = min(
+						max(0, min(offset, end - 1) - start - chunk.prefixLength) + chunk.sourceOffset,
+						len(sourceText) - 1,
+					)
+					if index < 0:
+						raise LookupError("Empty PowerPoint text range")
+					# COM text ranges use UTF-16 offsets; the virtual slide uses Python string offsets.
+					charStart = len(sourceText[:index].encode("utf-16-le")) // 2 + 1
+					charLength = len(sourceText[index : index + 1].encode("utf-16-le")) // 2
+					range = chunk.textRange.characters(charStart, charLength)
+					bounds = (range.boundLeft, range.boundTop, range.boundWidth, range.boundHeight)
+				else:
+					shape = chunk.shape
+					bounds = (shape.left, shape.top, shape.width, shape.height)
+				return root.slideRectToScreen(*bounds)
+			except comtypes.COMError as error:
+				raise LookupError("PowerPoint text location unavailable") from error
+		raise LookupError("No on-screen source for this slide label")
 
 	def _getOffsetsFromNVDAObject(self, obj):
 		if obj == self.obj.rootNVDAObject:
@@ -1775,6 +1805,24 @@ class SlideShowWindow(PaneClassDC):
 				# Translators: The message for an empty slide in a slide show
 				self.basicText = _("Empty slide")
 		return self.basicText or _("Empty slide")
+
+	def slideRectToScreen(self, left: float, top: float, width: float, height: float) -> RectLTRB:
+		"""Map slide-point coordinates into the fitted slide-show client area."""
+		page = self.ppObjectModel.presentation.pageSetup
+		client = winUser.getClientRect(self.windowHandle)
+		clientLeft, clientTop = winUser.ClientToScreen(self.windowHandle, client.left, client.top)
+		clientWidth, clientHeight = client.right - client.left, client.bottom - client.top
+		if min(page.slideWidth, page.slideHeight, clientWidth, clientHeight) <= 0:
+			raise LookupError("PowerPoint slide-show viewport unavailable")
+		scale = min(clientWidth / page.slideWidth, clientHeight / page.slideHeight)
+		x = clientLeft + (clientWidth - page.slideWidth * scale) / 2
+		y = clientTop + (clientHeight - page.slideHeight * scale) / 2
+		return RectLTRB(
+			round(x + left * scale),
+			round(y + top * scale),
+			round(x + (left + width) * scale),
+			round(y + (top + height) * scale),
+		)
 
 	def handleSlideChange(self, *, report: bool = True) -> bool:
 		try:
