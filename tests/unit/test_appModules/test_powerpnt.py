@@ -59,11 +59,17 @@ class TestSlideTitles(unittest.TestCase):
 		)
 		self.document = _object(
 			powerpnt.DocumentWindow,
+			windowHandle=1,
 			ppActivePaneViewType=powerpnt.ppViewSlide,
 		)
 		self.slide = _object(powerpnt.Slide, ppObject=self.ppSlide, documentWindow=self.document)
 		self.document.currentSlide = self.slide
-		self.window = _object(powerpnt.SlideShowWindow, currentSlide=self.slide, notesMode=False)
+		self.window = _object(
+			powerpnt.SlideShowWindow,
+			windowHandle=1,
+			currentSlide=self.slide,
+			notesMode=False,
+		)
 
 	def test_slideNameLabelsTitleWithoutParentheses(self) -> None:
 		self.assertEqual(self.slide.name, "Slide 1 - Slide title: Παράδειγμα")
@@ -225,6 +231,55 @@ class TestSlideTitles(unittest.TestCase):
 		)
 		self.bodyShape.textFrame.textRange.paragraphs = Mock(return_value=[paragraph])
 		self.assertTrue(self.window.basicText.endswith("2. First\nSecond"))
+
+
+class TestSlideShowFocus(unittest.TestCase):
+	def setUp(self) -> None:
+		self.window = Mock()
+		self.interceptor = _object(powerpnt.SlideShowTreeInterceptor, rootNVDAObject=self.window)
+
+	def test_nativeChildFocusIsNotSuppressed(self) -> None:
+		nextHandler = Mock()
+		self.interceptor.event_gainFocus(SimpleNamespace(), nextHandler)
+		nextHandler.assert_called_once_with()
+
+	def test_rootFocusIsHandledOnlyByTheTreeInterceptor(self) -> None:
+		nextHandler = Mock()
+		self.interceptor.event_gainFocus(self.window, nextHandler)
+		nextHandler.assert_not_called()
+
+	def test_regainingFocusRefreshesSlideBeforeReporting(self) -> None:
+		self.interceptor.hadFocusOnce = True
+		self.window.handleSlideChange.return_value = True
+		with patch.object(powerpnt.SlideShowTreeInterceptor, "reportNewSlide") as reportNewSlide:
+			self.interceptor.event_treeInterceptor_gainFocus()
+		self.window.handleSlideChange.assert_called_once_with(report=False)
+		reportNewSlide.assert_called_once_with(False, resetSelection=True)
+
+	def test_regainingFocusOnSameSlidePreservesReadingPosition(self) -> None:
+		self.interceptor.hadFocusOnce = True
+		self.window.handleSlideChange.return_value = False
+		with patch.object(powerpnt.SlideShowTreeInterceptor, "reportNewSlide") as reportNewSlide:
+			self.interceptor.event_treeInterceptor_gainFocus()
+		reportNewSlide.assert_called_once_with(True, resetSelection=False)
+
+	def test_newSlideResetsReadingPositionAndUpdatesBrailleWithoutSayAll(self) -> None:
+		info = Mock(isCollapsed=True)
+		self.interceptor.makeTextInfo = Mock(return_value=info)
+		with (
+			patch.object(powerpnt.config, "conf", {"virtualBuffers": {"autoSayAllOnPageLoad": False}}),
+			patch.object(
+				powerpnt.SlideShowTreeInterceptor,
+				"selection",
+				new_callable=PropertyMock,
+			) as selection,
+			patch.object(powerpnt.braille.handler, "handleGainFocus") as handleGainFocus,
+			patch.object(powerpnt.speech, "speakTextInfo"),
+		):
+			selection.return_value = info
+			self.interceptor.reportNewSlide()
+		info.updateCaret.assert_called_once_with()
+		handleGainFocus.assert_called_once_with(self.interceptor)
 
 
 class TestTextFrameFormatting(unittest.TestCase):

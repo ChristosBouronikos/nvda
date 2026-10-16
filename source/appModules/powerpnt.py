@@ -1440,8 +1440,8 @@ class SlideShowTreeInterceptorTextInfo(NVDAObjectTextInfo):
 		raise LookupError
 
 	def getTextWithFields(self, formatConfig: dict | None = None) -> textInfos.TextInfo.TextWithFieldsT:
-		fields = self.obj.rootNVDAObject.basicTextFields
 		text = self.obj.rootNVDAObject.basicText
+		fields = self.obj.rootNVDAObject.basicTextFields
 		out = []
 		textOffset = self._startOffset
 		for fieldOffset, field in fields:
@@ -1494,28 +1494,36 @@ class SlideShowTreeInterceptor(DocumentTreeInterceptor):
 	hadFocusOnce = False
 
 	def event_treeInterceptor_gainFocus(self):
-		braille.handler.handleGainFocus(self)
+		changed = self.rootNVDAObject.handleSlideChange(report=False)
 		self.rootNVDAObject.reportFocus()
-		self.reportNewSlide(self.hadFocusOnce)
+		self.reportNewSlide(
+			self.hadFocusOnce and not changed,
+			resetSelection=changed or not self.hadFocusOnce,
+		)
 		if not self.hadFocusOnce:
 			self.hadFocusOnce = True
 
 	def event_gainFocus(self, obj, nextHandler):
-		pass
+		if obj != self.rootNVDAObject:
+			# Native links and media controls can receive focus within the slide show.
+			nextHandler()
 
 	TextInfo = SlideShowTreeInterceptorTextInfo
 
 	def makeTextInfo(self, position):
 		return self.TextInfo(self, position)
 
-	def reportNewSlide(self, suppressSayAll: bool = False):
+	def reportNewSlide(self, suppressSayAll: bool = False, *, resetSelection: bool = True):
 		"""Reports a new slide, activating say all when appropriate.
 		:param suppressSayAll: When say all should be suppressed always, e.g.
 			because tree interceptor gets focus multiple times.
+		:param resetSelection: Reset the virtual reading position when the slide changes.
 		"""
+		if resetSelection:
+			self.makeTextInfo(textInfos.POSITION_FIRST).updateCaret()
+		braille.handler.handleGainFocus(self)
 		doSayAll = not suppressSayAll and config.conf["virtualBuffers"]["autoSayAllOnPageLoad"]
 		if doSayAll:
-			self.makeTextInfo(textInfos.POSITION_FIRST).updateCaret()
 			sayAll.SayAllHandler.readText(sayAll.CURSOR.CARET)
 		else:
 			info = self.selection
@@ -1672,22 +1680,27 @@ class SlideShowWindow(PaneClassDC):
 				self.basicText = _("Empty slide")
 		return self.basicText or _("Empty slide")
 
-	def handleSlideChange(self) -> None:
+	def handleSlideChange(self, *, report: bool = True) -> bool:
 		try:
 			del self.__dict__["currentSlide"]
 		except KeyError:
 			pass
-		# The window name no longer includes the title, but title changes must still be detected.
-		curSlideChangeID = (self.name, self.currentSlide.name if self.currentSlide else None)
+		slide = self.currentSlide
+		# Names and slide numbers can match in different slides or custom slide shows.
+		curSlideChangeID = (slide.ppObject.slideID, slide.name, self.notesMode) if slide else None
 		if curSlideChangeID == self._lastSlideChangeID:
-			return
+			return False
 		self._lastSlideChangeID = curSlideChangeID
 		try:
 			del self.__dict__["basicText"]
 		except KeyError:
 			pass
-		self.reportFocus()
-		self.treeInterceptor.reportNewSlide()
+		self.invalidateCache()
+		if report:
+			self.reportFocus()
+			if self.treeInterceptor:
+				self.treeInterceptor.reportNewSlide()
+		return True
 
 
 class AppModule(appModuleHandler.AppModule):
