@@ -35,7 +35,9 @@ def _textShape(shapeID: int, text: str) -> SimpleNamespace:
 	]
 	return SimpleNamespace(
 		ID=shapeID,
+		type=powerpnt.msoTextBox,
 		hasTextFrame=True,
+		alternativeText="",
 		title="",
 		textFrame=SimpleNamespace(textRange=SimpleNamespace(text=text, paragraphs=lambda: paragraphs)),
 	)
@@ -113,13 +115,19 @@ class TestSlideTitles(unittest.TestCase):
 
 	def test_notesKeepSlideTitleAndDoNotAddContentLabels(self) -> None:
 		self.window.notesMode = True
-		self.ppSlide.notesPage = SimpleNamespace(shapes=_Shapes([_textShape(3, "Speaker notes")]))
+		notesShape = _textShape(3, "Speaker notes")
+		notesShape.placeholderFormat = SimpleNamespace(type=powerpnt.ppPlaceholderBody)
+		self.ppSlide.notesPage = SimpleNamespace(shapes=_Shapes([notesShape]))
 		self.assertIn("Slide title: Παράδειγμα", self.window.name)
 		self.assertEqual(self.window.basicText, "Speaker notes")
 
 	def test_mathFieldOffsetsIncludeSectionLabels(self) -> None:
 		field = textInfos.ControlField(role="math")
-		with patch.object(powerpnt.SlideShowWindow, "_getShapeText", return_value=iter([field])):
+		with patch.object(
+			powerpnt.SlideShowWindow,
+			"_getShapeText",
+			return_value=iter([powerpnt._SlideTextChunk(field, self.bodyShape)]),
+		):
 			self.assertEqual(self.window.basicText, "Slide title: Παράδειγμα\nSlide contents\n ")
 		self.assertEqual(
 			self.window.basicTextFields,
@@ -231,6 +239,121 @@ class TestSlideTitles(unittest.TestCase):
 		)
 		self.bodyShape.textFrame.textRange.paragraphs = Mock(return_value=[paragraph])
 		self.assertTrue(self.window.basicText.endswith("2. First\nSecond"))
+
+	def test_slideTextIsBuiltBeforeAccessingItsFields(self) -> None:
+		info = _object(
+			powerpnt.SlideShowTreeInterceptorTextInfo,
+			obj=SimpleNamespace(rootNVDAObject=self.window),
+			_startOffset=0,
+			_endOffset=100,
+		)
+		self.assertEqual(info.getTextWithFields(), ["Slide title: Παράδειγμα\nSlide contents\nBody text"])
+
+	def test_completedSlideShowDoesNotKeepOldFields(self) -> None:
+		self.window.currentSlide = None
+		self.window.basicTextFields = [(5, textInfos.ControlField(role="math"))]
+		_ = self.window.basicText
+		self.assertEqual(self.window.basicTextFields, [])
+
+	def test_distinctSlidesWithIdenticalNamesAreReported(self) -> None:
+		with (
+			patch.object(
+				powerpnt.SlideShowWindow,
+				"treeInterceptor",
+				new_callable=PropertyMock,
+			) as interceptor,
+			patch.object(powerpnt.SlideShowWindow, "currentSlide", new_callable=PropertyMock) as currentSlide,
+			patch.object(powerpnt.SlideShowWindow, "reportFocus") as reportFocus,
+		):
+			interceptor.return_value = Mock()
+			currentSlide.return_value = self.slide
+			self.window.handleSlideChange()
+			self.ppSlide.slideID += 1
+			self.window.handleSlideChange()
+			self.assertEqual(reportFocus.call_count, 2)
+
+	def test_slideRefreshCanBeSilentWhenRegainingFocus(self) -> None:
+		with (
+			patch.object(
+				powerpnt.SlideShowWindow,
+				"treeInterceptor",
+				new_callable=PropertyMock,
+			) as interceptor,
+			patch.object(powerpnt.SlideShowWindow, "currentSlide", new_callable=PropertyMock) as currentSlide,
+			patch.object(powerpnt.SlideShowWindow, "reportFocus") as reportFocus,
+		):
+			interceptor.return_value = Mock()
+			currentSlide.return_value = self.slide
+			self.assertTrue(self.window.handleSlideChange(report=False))
+			self.assertFalse(self.window.handleSlideChange(report=False))
+			reportFocus.assert_not_called()
+			interceptor.return_value.reportNewSlide.assert_not_called()
+
+	def test_shapeValueIncludesBulletsWhenTabbingInEditingView(self) -> None:
+		self.bodyShape.textFrame.textRange.paragraphs = lambda: [
+			SimpleNamespace(
+				text="Item\r",
+				paragraphFormat=SimpleNamespace(
+					bullet=SimpleNamespace(type=powerpnt.ppBulletNumbered, number=3),
+				),
+			),
+		]
+		shape = _object(powerpnt.Shape, ppObject=self.bodyShape, documentWindow=self.document)
+		self.assertEqual(shape.value, "3. Item")
+
+	def test_smartArtNodesAreReadInModelOrder(self) -> None:
+		shape = SimpleNamespace(
+			type=powerpnt.msoSmartArt,
+			hasTextFrame=False,
+			smartArt=SimpleNamespace(
+				allNodes=[
+					SimpleNamespace(textFrame2=SimpleNamespace(textRange=SimpleNamespace(text=text)))
+					for text in ["Start", "", "Review\rFinish"]
+				],
+			),
+		)
+		self.assertEqual(
+			[chunk.content for chunk in self.window._getShapeText(shape)],
+			["Start", "Review\nFinish"],
+		)
+		obj = _object(powerpnt.Shape, ppObject=shape, documentWindow=self.document)
+		self.assertEqual(obj.value, "Start\nReview\nFinish")
+
+	def test_unlabelledMediaStillHasAnAccessibleLabel(self) -> None:
+		for mediaType, role in [(powerpnt.ppVideo, "video"), (powerpnt.ppAudio, "audio")]:
+			with self.subTest(mediaType=mediaType):
+				shape = SimpleNamespace(
+					type=powerpnt.msoMedia,
+					mediaType=mediaType,
+					hasTextFrame=False,
+					hasTable=False,
+					alternativeText="",
+				)
+				self.assertEqual([chunk.content for chunk in self.window._getShapeText(shape)], [role])
+
+	def test_decorativeShapesAreSkippedOnlyForSlideShowReading(self) -> None:
+		self.bodyShape.decorative = -1
+		self.assertEqual(list(self.window._getShapeText(self.bodyShape)), [])
+		obj = _object(powerpnt.Shape, ppObject=self.bodyShape, documentWindow=self.document)
+		self.assertEqual(obj.value, "Body text")
+
+	def test_symbolGlyphUsesAuthoredAlternativeText(self) -> None:
+		self.bodyShape.alternativeText = "cycle symbol"
+		self.bodyShape.textFrame.textRange.font = SimpleNamespace(name="Webdings")
+		self.assertEqual(
+			[chunk.content for chunk in self.window._getShapeText(self.bodyShape)],
+			["cycle symbol"],
+		)
+
+	def test_notesBodyIsFoundByTypeAndFooterIsNotRead(self) -> None:
+		footer = _textShape(4, "Footer")
+		footer.placeholderFormat = SimpleNamespace(type=powerpnt.ppPlaceholderFooter)
+		notes = _textShape(5, "Actual notes")
+		notes.placeholderFormat = SimpleNamespace(type=powerpnt.ppPlaceholderBody)
+		self.ppSlide.notesPage = SimpleNamespace(shapes=[footer, self.bodyShape, notes])
+		self.window.notesMode = True
+		self.assertIs(powerpnt.getNotesTextFrame(self.ppSlide), notes.textFrame)
+		self.assertEqual(self.window.basicText, "Actual notes")
 
 
 class TestSlideShowFocus(unittest.TestCase):

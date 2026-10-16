@@ -6,6 +6,7 @@
 import ctypes
 from typing import (
 	Any,
+	NamedTuple,
 )
 
 import api
@@ -280,6 +281,48 @@ def getBulletText(ppBulletFormat):
 		)  # (ppBulletFormat.startValue+(ppBulletFormat.number-1))
 	elif t:
 		return chr(ppBulletFormat.character)
+
+
+class _SlideTextChunk(NamedTuple):
+	content: str | textInfos.ControlField
+	shape: Any
+	textRange: Any = None
+	prefixLength: int = 0
+	sourceOffset: int = 0
+
+
+def getParagraphText(paragraph) -> tuple[str, int]:
+	bullet = getBulletText(paragraph.paragraphFormat.bullet)
+	text = paragraph.text.replace("\x0b", "\n").replace("\r", "\n").rstrip()
+	prefix = f"{bullet} " if bullet else ""
+	return f"{prefix}{text}", len(prefix)
+
+
+def iterTextRangeParagraphs(textRange):
+	"""Yield paragraph text with its own bullet and PowerPoint line breaks normalized."""
+	for paragraph in textRange.paragraphs():
+		text, _prefixLength = getParagraphText(paragraph)
+		if text and not text.isspace():
+			yield text
+
+
+def getSmartArtText(shape) -> str:
+	return "\n".join(
+		text
+		for node in shape.smartArt.allNodes
+		if (text := node.textFrame2.textRange.text.replace("\x0b", "\n").replace("\r", "\n").strip())
+	)
+
+
+def getNotesTextFrame(slide):
+	"""Find the notes body by placeholder type, not by a template-dependent shape index."""
+	for shape in slide.notesPage.shapes:
+		try:
+			if shape.placeholderFormat.type == ppPlaceholderBody and shape.hasTextFrame:
+				return shape.textFrame
+		except (AttributeError, comtypes.COMError):
+			continue
+	return None
 
 
 def walkPpShapeRange(ppShapeRange):
@@ -1033,7 +1076,9 @@ class Shape(PpObject):
 
 	def _get_value(self):
 		if self.ppObject.hasTextFrame:
-			return self.ppObject.textFrame.textRange.text
+			return "\n".join(iterTextRangeParagraphs(self.ppObject.textFrame.textRange))
+		if self.ppShapeType == msoSmartArt:
+			return getSmartArtText(self.ppObject)
 
 	def _get_states(self):
 		states = super().states
@@ -1584,15 +1629,36 @@ class SlideShowWindow(PaneClassDC):
 	value = None
 
 	def _getShapeText(self, shape, cellShape=False):
+		try:
+			if shape.decorative == -1:
+				return
+		except (AttributeError, comtypes.COMError):
+			# The flag was added in newer versions of Office.
+			pass
+		if shape.type == msoSmartArt:
+			for node in shape.smartArt.allNodes:
+				range = node.textFrame2.textRange
+				text = range.text.replace("\x0b", "\n").replace("\r", "\n").rstrip()
+				if text:
+					yield _SlideTextChunk(text, shape, range)
+			return
 		if shape.hasTextFrame:
-			for p in shape.textFrame.textRange.paragraphs():
-				bulletText = getBulletText(p.paragraphFormat.bullet)
-				text = p.text.replace("\x0b", "\n")
-				text = text.replace("\r", "\n")
-				text = text.rstrip()
-				text = " ".join([t for t in (bulletText, text) if t])
+			# An authored description is the useful text for a symbol-font glyph,
+			# whereas its underlying character (for example Webdings "q") is misleading.
+			label = shape.alternativeText
+			if label and shape.textFrame.textRange.font.name in (
+				"Wingdings",
+				"Wingdings 2",
+				"Wingdings 3",
+				"Webdings",
+				"Symbol",
+			):
+				yield _SlideTextChunk(label, shape)
+				return
+			for paragraph in shape.textFrame.textRange.paragraphs():
+				text, prefixLength = getParagraphText(paragraph)
 				if text and not text.isspace():
-					yield text
+					yield _SlideTextChunk(text, shape, paragraph, prefixLength)
 			return
 		if cellShape:
 			return
@@ -1612,13 +1678,20 @@ class SlideShowWindow(PaneClassDC):
 		if shapeType == msoEmbeddedOLEObject:
 			oleFormat = shape.OLEFormat
 			if oleFormat.ProgID.startswith(MATHTYPE_PROGID):
-				yield textInfos.ControlField(
-					role=controlTypes.Role.MATH,
-					oleFormat=oleFormat,
-					_startOfNode=True,
+				yield _SlideTextChunk(
+					textInfos.ControlField(
+						role=controlTypes.Role.MATH,
+						oleFormat=oleFormat,
+						_startOfNode=True,
+					),
+					shape,
 				)
 			return
 		label = shape.alternativeText
+		if shapeType == msoMedia:
+			role = controlTypes.Role.VIDEO if shape.mediaType == ppVideo else controlTypes.Role.AUDIO
+			yield _SlideTextChunk(" ".join(part for part in (role.displayString, label) if part), shape)
+			return
 		if not label:
 			try:
 				label = shape.title
@@ -1627,11 +1700,14 @@ class SlideShowWindow(PaneClassDC):
 		if label:
 			typeName = " ".join(shape.name.split(" ")[:-1])
 			if typeName and not typeName.isspace():
-				yield "%s %s" % (typeName, label)  # noqa: UP031
+				yield _SlideTextChunk(f"{typeName} {label}", shape)
 			else:
-				yield label
+				yield _SlideTextChunk(label, shape)
 
 	def _get_basicText(self) -> str:
+		# Fields belong to this rendering, including the completed-slide-show case.
+		fields = self.basicTextFields = []
+		locations = self.basicTextLocations = []
 		if not self.currentSlide:
 			return self.name
 		chunks = []
@@ -1639,16 +1715,36 @@ class SlideShowWindow(PaneClassDC):
 		titleShape = None
 		title = ""
 		if self.notesMode:
-			ppObject = ppObject.notesPage
+			notesFrame = getNotesTextFrame(ppObject)
+			if notesFrame is not None:
+				chunks.extend(iterTextRangeParagraphs(notesFrame.textRange))
+			self.basicText = "\n".join(chunks) or _("No notes")
+			return self.basicText
 		else:
 			titleShape = self.currentSlide.titleShape
 			title = self.currentSlide.titleText
 			if title:
 				# Translators: The title text of a PowerPoint slide, preceded by its label.
-				chunks.append(_("Slide title: {title}").format(title=title))
+				template = _("Slide title: {title}")
+				label = template.format(title=title)
+				chunks.append(label)
+				range = titleShape.textFrame.textRange
+				sourceOffset = len(range.text) - len(range.text.lstrip())
+				locations.append(
+					(
+						0,
+						len(label),
+						_SlideTextChunk(
+							label,
+							titleShape,
+							range,
+							len(template.partition("{title}")[0]),
+							sourceOffset,
+						),
+					),
+				)
 		# Maintain a list of fields and the offsets at which they occur.
 		# For now, these are only control fields that consume a space.
-		fields = self.basicTextFields = []
 		# Incrementation of textLen must include line feed added by join.
 		textLen = sum(len(chunk) + 1 for chunk in chunks)
 		hasContents = False
@@ -1656,7 +1752,8 @@ class SlideShowWindow(PaneClassDC):
 			# Only skip the designated title shape; identical text in other shapes is still content.
 			if title and titleShape and shape.ID == titleShape.ID:
 				continue
-			for chunk in self._getShapeText(shape):
+			for source in self._getShapeText(shape):
+				chunk = source.content
 				if not self.notesMode and not hasContents:
 					# Translators: Announced before reading the non-title content of a PowerPoint slide.
 					contentLabel = _("Slide contents")
@@ -1664,10 +1761,12 @@ class SlideShowWindow(PaneClassDC):
 					textLen += len(contentLabel) + 1
 					hasContents = True
 				if isinstance(chunk, textInfos.ControlField):
+					locations.append((textLen, textLen + 1, source))
 					fields.append((textLen, chunk))
 					chunks.append(" ")
 					textLen += 2
 				else:
+					locations.append((textLen, textLen + len(chunk), source))
 					chunks.append(chunk)
 					textLen += len(chunk) + 1
 		self.basicText = "\n".join(chunks)
