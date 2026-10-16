@@ -6,6 +6,7 @@
 import ctypes
 from typing import (
 	Any,
+	NamedTuple,
 )
 
 import api
@@ -19,6 +20,7 @@ import comtypes.client.lazybind
 import config
 import controlTypes
 import eventHandler
+import languageHandler
 import msoAutoShapeTypes
 import oleacc
 import scriptHandler
@@ -282,12 +284,38 @@ def getBulletText(ppBulletFormat):
 		return chr(ppBulletFormat.character)
 
 
+def getDistanceText(points: float) -> str:
+	"""Convert PowerPoint's points to the measurement system used by Windows."""
+	if languageHandler.useImperialMeasurements():
+		value = points / 72
+		# Translators: A measurement in inches in Microsoft PowerPoint.
+		template = ngettext("{distance:.3g} inch", "{distance:.3g} inches", value)
+	else:
+		value = points * 2.54 / 72
+		# Translators: A measurement in centimetres in Microsoft PowerPoint.
+		template = ngettext("{distance:.3g} centimetre", "{distance:.3g} centimetres", value)
+	return template.format(distance=value)
+
+
+class _SlideTextChunk(NamedTuple):
+	content: str | textInfos.ControlField
+	shape: Any
+	textRange: Any = None
+	prefixLength: int = 0
+	sourceOffset: int = 0
+
+
+def getParagraphText(paragraph) -> tuple[str, int]:
+	bullet = getBulletText(paragraph.paragraphFormat.bullet)
+	text = paragraph.text.replace("\x0b", "\n").replace("\r", "\n").rstrip()
+	prefix = f"{bullet} " if bullet else ""
+	return f"{prefix}{text}", len(prefix)
+
+
 def iterTextRangeParagraphs(textRange):
 	"""Yield paragraph text with its own bullet and PowerPoint line breaks normalized."""
 	for paragraph in textRange.paragraphs():
-		bullet = getBulletText(paragraph.paragraphFormat.bullet)
-		text = paragraph.text.replace("\x0b", "\n").replace("\r", "\n").rstrip()
-		text = " ".join(part for part in (bullet, text) if part)
+		text, _prefixLength = getParagraphText(paragraph)
 		if text and not text.isspace():
 			yield text
 
@@ -617,6 +645,19 @@ class SlideBase(PpObject):
 class Slide(SlideBase):
 	"""Represents a single slide in Powerpoint."""
 
+	def _get_description(self):
+		if self.ppObject.slideShowTransition.hidden == -1:
+			# Translators: Describes a PowerPoint slide that is skipped during a slide show.
+			return _("hidden slide")
+		return None
+
+	def _get_states(self):
+		states = super().states.copy()
+		frame = getNotesTextFrame(self.ppObject)
+		if frame is not None and frame.textRange.text.strip():
+			states.add(controlTypes.State.HASNOTE)
+		return states
+
 	def _get_titleShape(self) -> comtypes.client.lazybind.Dispatch | None:
 		try:
 			return self.ppObject.shapes.title
@@ -733,84 +774,68 @@ class Shape(PpObject):
 				total = False
 				if otherIsBehind:
 					textList.append(
-						ngettext(
+						_(
 							# Translators: A message when a shape is in front of another shape on a PowerPoint slide
-							"covers left of {otherShape} by {distance:.3g} point",
-							"covers left of {otherShape} by {distance:.3g} points",
-							overlapsOtherLeftBy,
-						).format(otherShape=otherLabel, distance=overlapsOtherLeftBy),
+							"covers left of {otherShape} by {distance}",
+						).format(otherShape=otherLabel, distance=getDistanceText(overlapsOtherLeftBy)),
 					)
 				else:
 					textList.append(
-						ngettext(
+						_(
 							# Translators: A message when a shape is behind another shape on a PowerPoint slide
-							"behind left of {otherShape} by {distance:.3g} point",
-							"behind left of {otherShape} by {distance:.3g} points",
-							overlapsOtherLeftBy,
-						).format(otherShape=otherLabel, distance=overlapsOtherLeftBy),
+							"behind left of {otherShape} by {distance}",
+						).format(otherShape=otherLabel, distance=getDistanceText(overlapsOtherLeftBy)),
 					)
 			overlapsOtherTopBy = otherInfo["overlapsOtherTopBy"]
 			if overlapsOtherTopBy > 0:
 				total = False
 				if otherIsBehind:
 					textList.append(
-						ngettext(
+						_(
 							# Translators: A message when a shape is in front of another shape on a PowerPoint slide
-							"covers top of {otherShape} by {distance:.3g} point",
-							"covers top of {otherShape} by {distance:.3g} points",
-							overlapsOtherTopBy,
-						).format(otherShape=otherLabel, distance=overlapsOtherTopBy),
+							"covers top of {otherShape} by {distance}",
+						).format(otherShape=otherLabel, distance=getDistanceText(overlapsOtherTopBy)),
 					)
 				else:
 					textList.append(
-						ngettext(
+						_(
 							# Translators: A message when a shape is behind another shape on a PowerPoint slide
-							"behind top of {otherShape} by {distance:.3g} point",
-							"behind top of {otherShape} by {distance:.3g} points",
-							overlapsOtherTopBy,
-						).format(otherShape=otherLabel, distance=overlapsOtherTopBy),
+							"behind top of {otherShape} by {distance}",
+						).format(otherShape=otherLabel, distance=getDistanceText(overlapsOtherTopBy)),
 					)
 			overlapsOtherRightBy = otherInfo["overlapsOtherRightBy"]
 			if overlapsOtherRightBy > 0:
 				total = False
 				if otherIsBehind:
 					textList.append(
-						ngettext(
+						_(
 							# Translators: A message when a shape is in front of another shape on a PowerPoint slide
-							"covers right of {otherShape} by {distance:.3g} point",
-							"covers right of {otherShape} by {distance:.3g} points",
-							overlapsOtherRightBy,
-						).format(otherShape=otherLabel, distance=overlapsOtherRightBy),
+							"covers right of {otherShape} by {distance}",
+						).format(otherShape=otherLabel, distance=getDistanceText(overlapsOtherRightBy)),
 					)
 				else:
 					textList.append(
-						ngettext(
+						_(
 							# Translators: A message when a shape is behind another shape on a PowerPoint slide
-							"behind right of {otherShape} by {distance:.3g} point",
-							"behind right of {otherShape} by {distance:.3g} points",
-							overlapsOtherRightBy,
-						).format(otherShape=otherLabel, distance=overlapsOtherRightBy),
+							"behind right of {otherShape} by {distance}",
+						).format(otherShape=otherLabel, distance=getDistanceText(overlapsOtherRightBy)),
 					)
 			overlapsOtherBottomBy = otherInfo["overlapsOtherBottomBy"]
 			if overlapsOtherBottomBy > 0:
 				total = False
 				if otherIsBehind:
 					textList.append(
-						ngettext(
+						_(
 							# Translators: A message when a shape is in front of another shape on a PowerPoint slide
-							"covers bottom of {otherShape} by {distance:.3g} point",
-							"covers bottom of {otherShape} by {distance:.3g} points",
-							overlapsOtherBottomBy,
-						).format(otherShape=otherLabel, distance=overlapsOtherBottomBy),
+							"covers bottom of {otherShape} by {distance}",
+						).format(otherShape=otherLabel, distance=getDistanceText(overlapsOtherBottomBy)),
 					)
 				else:
 					textList.append(
-						ngettext(
+						_(
 							# Translators: A message when a shape is behind another shape on a PowerPoint slide
-							"behind bottom of {otherShape} by {distance:.3g} point",
-							"behind bottom of {otherShape} by {distance:.3g} points",
-							overlapsOtherBottomBy,
-						).format(otherShape=otherLabel, distance=overlapsOtherBottomBy),
+							"behind bottom of {otherShape} by {distance}",
+						).format(otherShape=otherLabel, distance=getDistanceText(overlapsOtherBottomBy)),
 					)
 			if total:
 				if otherIsBehind:
@@ -838,91 +863,81 @@ class Shape(PpObject):
 		if left:
 			if leftDistance >= 0:
 				onSlideList.append(
-					ngettext(
-						# Translators: For a shape within a PowerPoint Slide, this is the distance in points from the shape's
+					_(
+						# Translators: For a shape within a PowerPoint Slide, this is the distance with units from the shape's
 						# left edge to the slide's left edge
-						"{distance:.3g} point from left slide edge",
-						"{distance:.3g} points from left slide edge",
-						leftDistance,
-					).format(distance=leftDistance),
+						"{distance} from left slide edge",
+					).format(distance=getDistanceText(leftDistance)),
 				)
 			else:
 				offSlideList.append(
-					ngettext(
+					_(
 						# Translators: For a shape too far off the left edge of a PowerPoint Slide, this is the distance in
 						# points from the shape's left edge (off the slide) to the slide's left edge (where the slide starts)
-						"Off left slide edge by {distance:.3g} point",
-						"Off left slide edge by {distance:.3g} points",
-						-leftDistance,
-					).format(distance=-leftDistance),
+						"Off left slide edge by {distance}",
+					).format(distance=getDistanceText(-leftDistance)),
 				)
 		if top:
 			if topDistance >= 0:
 				onSlideList.append(
-					ngettext(
-						# Translators: For a shape within a PowerPoint Slide, this is the distance in points from the shape's
+					_(
+						# Translators: For a shape within a PowerPoint Slide, this is the distance with units from the shape's
 						# top edge to the slide's top edge
-						"{distance:.3g} point from top slide edge",
-						"{distance:.3g} points from top slide edge",
-						topDistance,
-					).format(distance=topDistance),
+						"{distance} from top slide edge",
+					).format(distance=getDistanceText(topDistance)),
 				)
 			else:
 				offSlideList.append(
-					ngettext(
+					_(
 						# Translators: For a shape too far off the top edge of a PowerPoint Slide, this is the distance in
 						# points from the shape's top edge (off the slide) to the slide's top edge (where the slide starts)
-						"Off top slide edge by {distance:.3g} point",
-						"Off top slide edge by {distance:.3g} points",
-						-topDistance,
-					).format(distance=-topDistance),
+						"Off top slide edge by {distance}",
+					).format(distance=getDistanceText(-topDistance)),
 				)
 		if right:
 			if rightDistance >= 0:
 				onSlideList.append(
-					ngettext(
-						# Translators: For a shape within a PowerPoint Slide, this is the distance in points from the shape's
+					_(
+						# Translators: For a shape within a PowerPoint Slide, this is the distance with units from the shape's
 						# right edge to the slide's right edge
-						"{distance:.3g} point from right slide edge",
-						"{distance:.3g} points from right slide edge",
-						rightDistance,
-					).format(distance=rightDistance),
+						"{distance} from right slide edge",
+					).format(distance=getDistanceText(rightDistance)),
 				)
 			else:
 				offSlideList.append(
-					ngettext(
+					_(
 						# Translators: For a shape too far off the right edge of a PowerPoint Slide, this is the distance in
 						# points from the shape's right edge (off the slide) to the slide's right edge (where the slide starts)
-						"Off right slide edge by {distance:.3g} point",
-						"Off right slide edge by {distance:.3g} points",
-						-rightDistance,
-					).format(distance=-rightDistance),
+						"Off right slide edge by {distance}",
+					).format(distance=getDistanceText(-rightDistance)),
 				)
 		if bottom:
 			if bottomDistance >= 0:
 				onSlideList.append(
-					ngettext(
-						# Translators: For a shape within a PowerPoint Slide, this is the distance in points from the shape's
+					_(
+						# Translators: For a shape within a PowerPoint Slide, this is the distance with units from the shape's
 						# bottom edge to the slide's bottom edge
-						"{distance:.3g} point from bottom slide edge",
-						"{distance:.3g} points from bottom slide edge",
-						bottomDistance,
-					).format(distance=bottomDistance),
+						"{distance} from bottom slide edge",
+					).format(distance=getDistanceText(bottomDistance)),
 				)
 			else:
 				offSlideList.append(
-					ngettext(
+					_(
 						# Translators: For a shape too far off the bottom edge of a PowerPoint Slide, this is the distance in
 						# points from the shape's bottom edge (off the slide) to the slide's bottom edge (where the slide starts)
-						"Off bottom slide edge by {distance:.3g} point",
-						"Off bottom slide edge by {distance:.3g} points",
-						-bottomDistance,
-					).format(distance=-bottomDistance),
+						"Off bottom slide edge by {distance}",
+					).format(distance=getDistanceText(-bottomDistance)),
 				)
 		return ", ".join(offSlideList + onSlideList)
 
 	def _get_locationText(self):
-		textList = []
+		textList = [
+			# Translators: The size of a shape in Microsoft PowerPoint. Width and height include units.
+			_("width {width}, height {height}").format(
+				width=getDistanceText(self.ppObject.width),
+				height=getDistanceText(self.ppObject.height),
+			),
+		]
 		text = self._getOverlapText()
 		if text:
 			textList.append(text)
@@ -950,7 +965,8 @@ class Shape(PpObject):
 		text = self._getOverlapText()
 		if text:
 			textList.append(text)
-		text = self._getShapeLocationText(left=True, right=True)
+		bothAxes = "shift" in gesture.modifierNames and self.ppObject.lockAspectRatio == -1
+		text = self._getShapeLocationText(left=True, right=True, top=bothAxes, bottom=bothAxes)
 		if text:
 			textList.append(text)
 		ui.message(", ".join(textList))
@@ -964,10 +980,19 @@ class Shape(PpObject):
 		text = self._getOverlapText()
 		if text:
 			textList.append(text)
-		text = self._getShapeLocationText(top=True, bottom=True)
+		bothAxes = "shift" in gesture.modifierNames and self.ppObject.lockAspectRatio == -1
+		text = self._getShapeLocationText(top=True, bottom=True, left=bothAxes, right=bothAxes)
 		if text:
 			textList.append(text)
 		ui.message(", ".join(textList))
+
+	def script_rotate(self, gesture):
+		gesture.send()
+		if scriptHandler.isScriptWaiting():
+			return
+		self._clearLocationCache()
+		# Translators: The rotation angle of a shape in Microsoft PowerPoint.
+		ui.message(_("rotation {angle:g} degrees").format(angle=self.ppObject.rotation))
 
 	def _get_ppPlaceholderType(self):
 		try:
@@ -1106,6 +1131,10 @@ class Shape(PpObject):
 		"kb:shift+rightArrow": "moveHorizontal",
 		"kb:shift+upArrow": "moveVertical",
 		"kb:shift+downArrow": "moveVertical",
+		"kb:alt+leftArrow": "rotate",
+		"kb:alt+rightArrow": "rotate",
+		"kb:alt+shift+leftArrow": "rotate",
+		"kb:alt+shift+rightArrow": "rotate",
 		"kb:enter": "selectionChange",
 		"kb:f2": "selectionChange",
 	}
@@ -1292,7 +1321,8 @@ class TextFrameTextInfo(textInfos.offsets.OffsetsTextInfo):
 			startOffset, endOffset = offset, self._endOffset
 		# A font run can span several paragraphs with different bullets or alignments.
 		paragraphIndex, paragraphStart, paragraphEnd = self._getOffsets(
-			self.obj.ppObject.textRange.paragraphs(), offset
+			self.obj.ppObject.textRange.paragraphs(),
+			offset,
 		)
 		paragraph = self.obj.ppObject.textRange.paragraphs(paragraphIndex + 1, 1)
 		paragraphFormat = paragraph.paragraphFormat
@@ -1370,7 +1400,23 @@ class TableCell(PpObject):
 	"""Represents a table cell in Powerpoint. Accepts a table and a row and column number as this cannot be calculated directly."""
 
 	name = None
-	role = controlTypes.Role.TABLECELL
+
+	def _get_role(self):
+		if self.rowNumber == 1 and self.table.ppTable.firstRow:
+			return controlTypes.Role.TABLECOLUMNHEADER
+		if self.columnNumber == 1 and self.table.ppTable.firstCol:
+			return controlTypes.Role.TABLEROWHEADER
+		return controlTypes.Role.TABLECELL
+
+	def _get_rowHeaderText(self):
+		if self.columnNumber > 1 and self.table.ppTable.firstCol:
+			return self.table.ppTable.cell(self.rowNumber, 1).shape.textFrame.textRange.text.strip()
+		return None
+
+	def _get_columnHeaderText(self):
+		if self.rowNumber > 1 and self.table.ppTable.firstRow:
+			return self.table.ppTable.cell(1, self.columnNumber).shape.textFrame.textRange.text.strip()
+		return None
 
 	def _isEqual(self, other):
 		return self.table == other.table and (self.columnNumber, self.rowNumber) == (
@@ -1439,9 +1485,61 @@ class TableCellTextFrame(TextFrame):
 	def _isEqual(self, other):
 		return self.parent == other.parent
 
+	def _moveTableCell(self, rowDelta: int, columnDelta: int) -> None:
+		cell = self.parent
+		table = cell.table
+		row = cell.rowNumber + rowDelta
+		column = cell.columnNumber + columnDelta
+		if not (1 <= row <= table.rowCount and 1 <= column <= table.columnCount):
+			# Translators: Reported when attempting to move beyond the edge of a table.
+			ui.message(_("edge of table"))
+			return
+		try:
+			table.ppTable.cell(row, column).shape.textFrame.textRange.characters(1, 0).select()
+		except comtypes.COMError:
+			log.debugWarning("Could not select a PowerPoint table cell", exc_info=True)
+			return
+		self.documentWindow.handleSelectionChange()
+
+	@scriptHandler.script(
+		# Translators: A command for navigating a table in Microsoft PowerPoint.
+		description=_("Moves to the next row"),
+		category=SCRCAT_POWERPOINT,
+	)
+	def script_nextRow(self, gesture):
+		self._moveTableCell(1, 0)
+
+	@scriptHandler.script(
+		# Translators: A command for navigating a table in Microsoft PowerPoint.
+		description=_("Moves to the previous row"),
+		category=SCRCAT_POWERPOINT,
+	)
+	def script_previousRow(self, gesture):
+		self._moveTableCell(-1, 0)
+
+	@scriptHandler.script(
+		# Translators: A command for navigating a table in Microsoft PowerPoint.
+		description=_("Moves to the next column"),
+		category=SCRCAT_POWERPOINT,
+	)
+	def script_nextColumn(self, gesture):
+		self._moveTableCell(0, 1)
+
+	@scriptHandler.script(
+		# Translators: A command for navigating a table in Microsoft PowerPoint.
+		description=_("Moves to the previous column"),
+		category=SCRCAT_POWERPOINT,
+	)
+	def script_previousColumn(self, gesture):
+		self._moveTableCell(0, -1)
+
 	__gestures = {  # noqa: RUF012
 		"kb:tab": "selectionChange",
 		"kb:shift+tab": "selectionChange",
+		"kb:control+alt+downArrow": "nextRow",
+		"kb:control+alt+upArrow": "previousRow",
+		"kb:control+alt+rightArrow": "nextColumn",
+		"kb:control+alt+leftArrow": "previousColumn",
 	}
 
 
@@ -1459,7 +1557,37 @@ class SlideShowTreeInterceptorTextInfo(NVDAObjectTextInfo):
 	def _get_boundingRects(self) -> list[RectLTWH]:
 		if self.obj.rootNVDAObject.hasIrrelevantLocation:
 			raise LookupError("Object is off screen, invisible or has no location")
-		return [self.obj.rootNVDAObject.location]
+		return textInfos.offsets.OffsetsTextInfo._get_boundingRects(self)
+
+	def _getBoundingRectFromOffset(self, offset: int) -> RectLTRB:
+		root = self.obj.rootNVDAObject
+		# Building the text also establishes the source ranges for its chunks.
+		text = root.basicText
+		for start, end, chunk in root.basicTextLocations:
+			# Expanded line ranges include the separator after the source text.
+			if not (start <= offset < end or (offset == end and text[offset : offset + 1] == "\n")):
+				continue
+			try:
+				if chunk.textRange is not None:
+					sourceText = chunk.textRange.text
+					index = min(
+						max(0, min(offset, end - 1) - start - chunk.prefixLength) + chunk.sourceOffset,
+						len(sourceText) - 1,
+					)
+					if index < 0:
+						raise LookupError("Empty PowerPoint text range")
+					# COM text ranges use UTF-16 offsets; the virtual slide uses Python string offsets.
+					charStart = len(sourceText[:index].encode("utf-16-le")) // 2 + 1
+					charLength = len(sourceText[index : index + 1].encode("utf-16-le")) // 2
+					range = chunk.textRange.characters(charStart, charLength)
+					bounds = (range.boundLeft, range.boundTop, range.boundWidth, range.boundHeight)
+				else:
+					shape = chunk.shape
+					bounds = (shape.left, shape.top, shape.width, shape.height)
+				return root.slideRectToScreen(*bounds)
+			except comtypes.COMError as error:
+				raise LookupError("PowerPoint text location unavailable") from error
+		raise LookupError("No on-screen source for this slide label")
 
 	def _getOffsetsFromNVDAObject(self, obj):
 		if obj == self.obj.rootNVDAObject:
@@ -1618,9 +1746,11 @@ class SlideShowWindow(PaneClassDC):
 			# The flag was added in newer versions of Office.
 			pass
 		if shape.type == msoSmartArt:
-			text = getSmartArtText(shape)
-			if text:
-				yield text
+			for node in shape.smartArt.allNodes:
+				range = node.textFrame2.textRange
+				text = range.text.replace("\x0b", "\n").replace("\r", "\n").rstrip()
+				if text:
+					yield _SlideTextChunk(text, shape, range)
 			return
 		if shape.hasTextFrame:
 			# An authored description is the useful text for a symbol-font glyph,
@@ -1633,9 +1763,12 @@ class SlideShowWindow(PaneClassDC):
 				"Webdings",
 				"Symbol",
 			):
-				yield label
+				yield _SlideTextChunk(label, shape)
 				return
-			yield from iterTextRangeParagraphs(shape.textFrame.textRange)
+			for paragraph in shape.textFrame.textRange.paragraphs():
+				text, prefixLength = getParagraphText(paragraph)
+				if text and not text.isspace():
+					yield _SlideTextChunk(text, shape, paragraph, prefixLength)
 			return
 		if cellShape:
 			return
@@ -1655,16 +1788,19 @@ class SlideShowWindow(PaneClassDC):
 		if shapeType == msoEmbeddedOLEObject:
 			oleFormat = shape.OLEFormat
 			if oleFormat.ProgID.startswith(MATHTYPE_PROGID):
-				yield textInfos.ControlField(
-					role=controlTypes.Role.MATH,
-					oleFormat=oleFormat,
-					_startOfNode=True,
+				yield _SlideTextChunk(
+					textInfos.ControlField(
+						role=controlTypes.Role.MATH,
+						oleFormat=oleFormat,
+						_startOfNode=True,
+					),
+					shape,
 				)
 			return
 		label = shape.alternativeText
 		if shapeType == msoMedia:
 			role = controlTypes.Role.VIDEO if shape.mediaType == ppVideo else controlTypes.Role.AUDIO
-			yield " ".join(part for part in (role.displayString, label) if part)
+			yield _SlideTextChunk(" ".join(part for part in (role.displayString, label) if part), shape)
 			return
 		if not label:
 			try:
@@ -1674,13 +1810,14 @@ class SlideShowWindow(PaneClassDC):
 		if label:
 			typeName = " ".join(shape.name.split(" ")[:-1])
 			if typeName and not typeName.isspace():
-				yield "%s %s" % (typeName, label)  # noqa: UP031
+				yield _SlideTextChunk(f"{typeName} {label}", shape)
 			else:
-				yield label
+				yield _SlideTextChunk(label, shape)
 
 	def _get_basicText(self) -> str:
 		# Fields belong to this rendering, including the completed-slide-show case.
 		fields = self.basicTextFields = []
+		locations = self.basicTextLocations = []
 		if not self.currentSlide:
 			return self.name
 		chunks = []
@@ -1698,7 +1835,24 @@ class SlideShowWindow(PaneClassDC):
 			title = self.currentSlide.titleText
 			if title:
 				# Translators: The title text of a PowerPoint slide, preceded by its label.
-				chunks.append(_("Slide title: {title}").format(title=title))
+				template = _("Slide title: {title}")
+				label = template.format(title=title)
+				chunks.append(label)
+				range = titleShape.textFrame.textRange
+				sourceOffset = len(range.text) - len(range.text.lstrip())
+				locations.append(
+					(
+						0,
+						len(label),
+						_SlideTextChunk(
+							label,
+							titleShape,
+							range,
+							len(template.partition("{title}")[0]),
+							sourceOffset,
+						),
+					),
+				)
 		# Maintain a list of fields and the offsets at which they occur.
 		# For now, these are only control fields that consume a space.
 		# Incrementation of textLen must include line feed added by join.
@@ -1708,7 +1862,8 @@ class SlideShowWindow(PaneClassDC):
 			# Only skip the designated title shape; identical text in other shapes is still content.
 			if title and titleShape and shape.ID == titleShape.ID:
 				continue
-			for chunk in self._getShapeText(shape):
+			for source in self._getShapeText(shape):
+				chunk = source.content
 				if not self.notesMode and not hasContents:
 					# Translators: Announced before reading the non-title content of a PowerPoint slide.
 					contentLabel = _("Slide contents")
@@ -1716,10 +1871,12 @@ class SlideShowWindow(PaneClassDC):
 					textLen += len(contentLabel) + 1
 					hasContents = True
 				if isinstance(chunk, textInfos.ControlField):
+					locations.append((textLen, textLen + 1, source))
 					fields.append((textLen, chunk))
 					chunks.append(" ")
 					textLen += 2
 				else:
+					locations.append((textLen, textLen + len(chunk), source))
 					chunks.append(chunk)
 					textLen += len(chunk) + 1
 		self.basicText = "\n".join(chunks)
@@ -1731,6 +1888,24 @@ class SlideShowWindow(PaneClassDC):
 				# Translators: The message for an empty slide in a slide show
 				self.basicText = _("Empty slide")
 		return self.basicText or _("Empty slide")
+
+	def slideRectToScreen(self, left: float, top: float, width: float, height: float) -> RectLTRB:
+		"""Map slide-point coordinates into the fitted slide-show client area."""
+		page = self.ppObjectModel.presentation.pageSetup
+		client = winUser.getClientRect(self.windowHandle)
+		clientLeft, clientTop = winUser.ClientToScreen(self.windowHandle, client.left, client.top)
+		clientWidth, clientHeight = client.right - client.left, client.bottom - client.top
+		if min(page.slideWidth, page.slideHeight, clientWidth, clientHeight) <= 0:
+			raise LookupError("PowerPoint slide-show viewport unavailable")
+		scale = min(clientWidth / page.slideWidth, clientHeight / page.slideHeight)
+		x = clientLeft + (clientWidth - page.slideWidth * scale) / 2
+		y = clientTop + (clientHeight - page.slideHeight * scale) / 2
+		return RectLTRB(
+			round(x + left * scale),
+			round(y + top * scale),
+			round(x + (left + width) * scale),
+			round(y + (top + height) * scale),
+		)
 
 	def handleSlideChange(self, *, report: bool = True) -> bool:
 		try:

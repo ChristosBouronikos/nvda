@@ -117,7 +117,11 @@ class TestSlideTitles(unittest.TestCase):
 
 	def test_mathFieldOffsetsIncludeSectionLabels(self) -> None:
 		field = textInfos.ControlField(role="math")
-		with patch.object(powerpnt.SlideShowWindow, "_getShapeText", return_value=iter([field])):
+		with patch.object(
+			powerpnt.SlideShowWindow,
+			"_getShapeText",
+			return_value=iter([powerpnt._SlideTextChunk(field, self.bodyShape)]),
+		):
 			self.assertEqual(self.window.basicText, "Slide title: Παράδειγμα\nSlide contents\n ")
 		self.assertEqual(
 			self.window.basicTextFields,
@@ -248,7 +252,9 @@ class TestSlideTitles(unittest.TestCase):
 	def test_distinctSlidesWithIdenticalNamesAreReported(self) -> None:
 		with (
 			patch.object(
-				powerpnt.SlideShowWindow, "treeInterceptor", new_callable=PropertyMock
+				powerpnt.SlideShowWindow,
+				"treeInterceptor",
+				new_callable=PropertyMock,
 			) as interceptor,
 			patch.object(powerpnt.SlideShowWindow, "currentSlide", new_callable=PropertyMock) as currentSlide,
 			patch.object(powerpnt.SlideShowWindow, "reportFocus") as reportFocus,
@@ -263,7 +269,9 @@ class TestSlideTitles(unittest.TestCase):
 	def test_slideRefreshCanBeSilentWhenRegainingFocus(self) -> None:
 		with (
 			patch.object(
-				powerpnt.SlideShowWindow, "treeInterceptor", new_callable=PropertyMock
+				powerpnt.SlideShowWindow,
+				"treeInterceptor",
+				new_callable=PropertyMock,
 			) as interceptor,
 			patch.object(powerpnt.SlideShowWindow, "currentSlide", new_callable=PropertyMock) as currentSlide,
 			patch.object(powerpnt.SlideShowWindow, "reportFocus") as reportFocus,
@@ -295,10 +303,13 @@ class TestSlideTitles(unittest.TestCase):
 				allNodes=[
 					SimpleNamespace(textFrame2=SimpleNamespace(textRange=SimpleNamespace(text=text)))
 					for text in ["Start", "", "Review\rFinish"]
-				]
+				],
 			),
 		)
-		self.assertEqual(list(self.window._getShapeText(shape)), ["Start\nReview\nFinish"])
+		self.assertEqual(
+			[chunk.content for chunk in self.window._getShapeText(shape)],
+			["Start", "Review\nFinish"],
+		)
 		obj = _object(powerpnt.Shape, ppObject=shape, documentWindow=self.document)
 		self.assertEqual(obj.value, "Start\nReview\nFinish")
 
@@ -312,7 +323,7 @@ class TestSlideTitles(unittest.TestCase):
 					hasTable=False,
 					alternativeText="",
 				)
-				self.assertEqual(list(self.window._getShapeText(shape)), [role])
+				self.assertEqual([chunk.content for chunk in self.window._getShapeText(shape)], [role])
 
 	def test_decorativeShapesAreSkippedOnlyForSlideShowReading(self) -> None:
 		self.bodyShape.decorative = -1
@@ -323,7 +334,10 @@ class TestSlideTitles(unittest.TestCase):
 	def test_symbolGlyphUsesAuthoredAlternativeText(self) -> None:
 		self.bodyShape.alternativeText = "cycle symbol"
 		self.bodyShape.textFrame.textRange.font = SimpleNamespace(name="Webdings")
-		self.assertEqual(list(self.window._getShapeText(self.bodyShape)), ["cycle symbol"])
+		self.assertEqual(
+			[chunk.content for chunk in self.window._getShapeText(self.bodyShape)],
+			["cycle symbol"],
+		)
 
 	def test_notesBodyIsFoundByTypeAndFooterIsNotRead(self) -> None:
 		footer = _textShape(4, "Footer")
@@ -341,7 +355,8 @@ class TestPowerPointObjectModelSelection(unittest.TestCase):
 		show = SimpleNamespace(active=False)
 		editor = SimpleNamespace()
 		presentation = SimpleNamespace(
-			slideShowWindow=show, windows=SimpleNamespace(item=lambda index: editor)
+			slideShowWindow=show,
+			windows=SimpleNamespace(item=lambda index: editor),
 		)
 		app = SimpleNamespace(_ppApplicationFromROT=SimpleNamespace(activePresentation=presentation))
 		self.assertIs(powerpnt.AppModule._getPpObjectModelFromROT(app, slideShow=True), show)
@@ -351,7 +366,7 @@ class TestPowerPointObjectModelSelection(unittest.TestCase):
 		notes = _textShape(5, "Notes")
 		notes.placeholderFormat = SimpleNamespace(type=powerpnt.ppPlaceholderBody)
 		slide = SimpleNamespace(
-			notesPage=SimpleNamespace(shapes=[_textShape(1, ""), _textShape(2, ""), notes])
+			notesPage=SimpleNamespace(shapes=[_textShape(1, ""), _textShape(2, ""), notes]),
 		)
 		document = _object(
 			powerpnt.DocumentWindow,
@@ -363,7 +378,9 @@ class TestPowerPointObjectModelSelection(unittest.TestCase):
 		with patch.object(powerpnt, "NotesTextFrame") as cls:
 			self.assertIs(document.selection, cls.return_value)
 		cls.assert_called_once_with(
-			windowHandle=document.windowHandle, documentWindow=document, ppObject=notes.textFrame
+			windowHandle=document.windowHandle,
+			documentWindow=document,
+			ppObject=notes.textFrame,
 		)
 
 
@@ -403,7 +420,9 @@ class TestSlideShowFocus(unittest.TestCase):
 		with (
 			patch.object(powerpnt.config, "conf", {"virtualBuffers": {"autoSayAllOnPageLoad": False}}),
 			patch.object(
-				powerpnt.SlideShowTreeInterceptor, "selection", new_callable=PropertyMock
+				powerpnt.SlideShowTreeInterceptor,
+				"selection",
+				new_callable=PropertyMock,
 			) as selection,
 			patch.object(powerpnt.braille.handler, "handleGainFocus") as handleGainFocus,
 			patch.object(powerpnt.speech, "speakTextInfo"),
@@ -535,3 +554,267 @@ class TestTextFrameFormatting(unittest.TestCase):
 		link = self.info._getLinkDataAtCaretPosition()
 		self.assertEqual(link.displayText, "NV Access")
 		self.assertEqual(link.destination, "https://www.nvaccess.org")
+
+
+class TestPowerPointLayoutFeedback(unittest.TestCase):
+	def setUp(self) -> None:
+		self.shape = _object(
+			powerpnt.Shape,
+			ppObject=SimpleNamespace(width=72, height=144, rotation=15, lockAspectRatio=-1),
+		)
+
+	def test_distancesUseWindowsMeasurementSystem(self) -> None:
+		with patch.object(powerpnt.languageHandler, "useImperialMeasurements", return_value=True):
+			self.assertEqual(powerpnt.getDistanceText(72), "1 inch")
+			self.assertEqual(powerpnt.getDistanceText(144), "2 inches")
+		with patch.object(powerpnt.languageHandler, "useImperialMeasurements", return_value=False):
+			self.assertEqual(powerpnt.getDistanceText(72), "2.54 centimetres")
+			self.assertEqual(powerpnt.getDistanceText(0), "0 centimetres")
+
+	def test_locationQueryIncludesWidthAndHeight(self) -> None:
+		with (
+			patch.object(powerpnt.languageHandler, "useImperialMeasurements", return_value=True),
+			patch.object(powerpnt.Shape, "_getOverlapText", return_value=""),
+			patch.object(powerpnt.Shape, "_getShapeLocationText", return_value=""),
+		):
+			self.assertEqual(self.shape.locationText, "width 1 inch, height 2 inches")
+
+	def test_edgeAndOverlapFeedbackUseTheSameLocalUnits(self) -> None:
+		self.shape._edgeDistances = (72, 144, -36, 0)
+		self.shape._overlapInfo = (
+			None,
+			{
+				"otherIsBehind": False,
+				"label": "rectangle",
+				"overlapsOtherLeftBy": 72,
+				"overlapsOtherTopBy": 0,
+				"overlapsOtherRightBy": 0,
+				"overlapsOtherBottomBy": 0,
+			},
+		)
+		with patch.object(powerpnt.languageHandler, "useImperialMeasurements", return_value=True):
+			self.assertEqual(self.shape._getOverlapText(), "behind left of rectangle by 1 inch")
+			self.assertEqual(
+				self.shape._getShapeLocationText(True, True, True, True),
+				"Off right slide edge by 0.5 inches, 1 inch from left slide edge, "
+				"2 inches from top slide edge, 0 inches from bottom slide edge",
+			)
+
+	def test_lockedAspectRatioResizeReportsBothAxes(self) -> None:
+		gesture = Mock(modifierNames=["shift"])
+		with (
+			patch.object(powerpnt.scriptHandler, "isScriptWaiting", return_value=False),
+			patch.object(powerpnt.Shape, "_getOverlapText", return_value=""),
+			patch.object(powerpnt.Shape, "_getShapeLocationText", return_value="") as location,
+		):
+			self.shape.script_moveHorizontal(gesture)
+			location.assert_called_with(left=True, right=True, top=True, bottom=True)
+			self.shape.script_moveVertical(gesture)
+			location.assert_called_with(top=True, bottom=True, left=True, right=True)
+		self.assertEqual(gesture.send.call_count, 2)
+
+	def test_ordinaryMoveStillReportsOnlyTheMovedAxis(self) -> None:
+		gesture = Mock(modifierNames=[])
+		with (
+			patch.object(powerpnt.scriptHandler, "isScriptWaiting", return_value=False),
+			patch.object(powerpnt.Shape, "_getOverlapText", return_value=""),
+			patch.object(powerpnt.Shape, "_getShapeLocationText", return_value="") as location,
+		):
+			self.shape.script_moveHorizontal(gesture)
+			location.assert_called_once_with(left=True, right=True, top=False, bottom=False)
+
+	def test_rotationReadsTheAngleAfterSendingTheNativeShortcut(self) -> None:
+		gesture = Mock()
+		gesture.send.side_effect = lambda: setattr(self.shape.ppObject, "rotation", 30)
+		with (
+			patch.object(powerpnt.scriptHandler, "isScriptWaiting", return_value=False),
+			patch.object(powerpnt.ui, "message") as message,
+		):
+			self.shape.script_rotate(gesture)
+		gesture.send.assert_called_once_with()
+		message.assert_called_once_with("rotation 30 degrees")
+
+	def test_hiddenSlideDescriptionDoesNotMakeTheObjectInvisible(self) -> None:
+		slide = _object(
+			powerpnt.Slide,
+			ppObject=SimpleNamespace(slideShowTransition=SimpleNamespace(hidden=-1)),
+		)
+		self.assertEqual(slide.description, "hidden slide")
+		slide.ppObject.slideShowTransition.hidden = 0
+		slide.invalidateCache()
+		self.assertIsNone(slide.description)
+
+	def test_onlyNonEmptyNotesAddHasNoteState(self) -> None:
+		frame = SimpleNamespace(textRange=SimpleNamespace(text="Speaker notes\r"))
+		slide = _object(powerpnt.Slide, ppObject=SimpleNamespace())
+		with (
+			patch.object(
+				powerpnt.Window,
+				"states",
+				new_callable=PropertyMock,
+				return_value=set(),
+				create=True,
+			),
+			patch.object(powerpnt, "getNotesTextFrame", return_value=frame),
+		):
+			self.assertIn(powerpnt.controlTypes.State.HASNOTE, slide._get_states())
+			frame.textRange.text = "\r "
+			slide.invalidateCache()
+			self.assertNotIn(powerpnt.controlTypes.State.HASNOTE, slide._get_states())
+
+
+class TestSlideShowLocations(unittest.TestCase):
+	setUp = TestSlideTitles.setUp
+
+	def test_slideRectangleFitsLetterboxedWindowOnAnotherMonitor(self) -> None:
+		self.window.ppObjectModel = SimpleNamespace(
+			presentation=SimpleNamespace(pageSetup=SimpleNamespace(slideWidth=960, slideHeight=540)),
+		)
+		with (
+			patch.object(powerpnt.winUser, "getClientRect", return_value=powerpnt.RectLTRB(0, 0, 1200, 900)),
+			patch.object(powerpnt.winUser, "ClientToScreen", return_value=(-1200, 100)),
+		):
+			self.assertEqual(
+				self.window.slideRectToScreen(96, 54, 192, 108),
+				powerpnt.RectLTRB(-1080, 280, -840, 415),
+			)
+
+	def test_invalidViewportDoesNotReturnFabricatedCoordinates(self) -> None:
+		self.window.ppObjectModel = SimpleNamespace(
+			presentation=SimpleNamespace(pageSetup=SimpleNamespace(slideWidth=960, slideHeight=540)),
+		)
+		with (
+			patch.object(powerpnt.winUser, "getClientRect", return_value=powerpnt.RectLTRB(0, 0, 0, 0)),
+			patch.object(powerpnt.winUser, "ClientToScreen", return_value=(0, 0)),
+			self.assertRaises(LookupError),
+		):
+			self.window.slideRectToScreen(0, 0, 10, 10)
+
+	def test_textLocationsAccountForLabelsBulletsAndUtf16Offsets(self) -> None:
+		range = Mock(text="A😀B\r", boundLeft=10, boundTop=20, boundWidth=30, boundHeight=40)
+		range.characters.return_value = range
+		paragraph = range
+		paragraph.paragraphFormat.bullet.type = powerpnt.ppBulletNumbered
+		paragraph.paragraphFormat.bullet.number = 1
+		self.bodyShape.textFrame.textRange.paragraphs = lambda: [paragraph]
+		text = self.window.basicText
+		info = _object(
+			powerpnt.SlideShowTreeInterceptorTextInfo,
+			obj=SimpleNamespace(rootNVDAObject=self.window),
+		)
+		with patch.object(
+			powerpnt.SlideShowWindow,
+			"slideRectToScreen",
+			return_value="screenRect",
+		) as convert:
+			self.assertEqual(info._getBoundingRectFromOffset(text.index("😀")), "screenRect")
+			range.characters.assert_called_with(2, 2)
+			info._getBoundingRectFromOffset(text.index("B", text.index("Slide contents")))
+			range.characters.assert_called_with(4, 1)
+			info._getBoundingRectFromOffset(text.index("1. "))
+			range.characters.assert_called_with(1, 1)
+			convert.assert_called_with(10, 20, 30, 40)
+
+	def test_graphicDescriptionUsesItsShapeRectangle(self) -> None:
+		shape = SimpleNamespace(left=10, top=20, width=100, height=80)
+		chunk = powerpnt._SlideTextChunk("Diagram", shape)
+		self.window.basicText = "Diagram"
+		self.window.basicTextLocations = [(0, 7, chunk)]
+		info = _object(
+			powerpnt.SlideShowTreeInterceptorTextInfo,
+			obj=SimpleNamespace(rootNVDAObject=self.window),
+		)
+		with patch.object(
+			powerpnt.SlideShowWindow,
+			"slideRectToScreen",
+			return_value="screenRect",
+		) as convert:
+			self.assertEqual(info._getBoundingRectFromOffset(3), "screenRect")
+			convert.assert_called_once_with(10, 20, 100, 80)
+
+	def test_virtualSectionLabelHasNoOnScreenRectangle(self) -> None:
+		text = self.window.basicText
+		info = _object(
+			powerpnt.SlideShowTreeInterceptorTextInfo,
+			obj=SimpleNamespace(rootNVDAObject=self.window),
+		)
+		with self.assertRaises(LookupError):
+			info._getBoundingRectFromOffset(text.index("Slide contents"))
+
+	def test_providerFailureBecomesLocationUnavailable(self) -> None:
+		range = Mock(text="text")
+		range.characters.side_effect = comtypes.COMError(-1, "Unavailable", None)
+		self.window.basicText = "text"
+		self.window.basicTextLocations = [(0, 4, powerpnt._SlideTextChunk("text", self.bodyShape, range))]
+		info = _object(
+			powerpnt.SlideShowTreeInterceptorTextInfo,
+			obj=SimpleNamespace(rootNVDAObject=self.window),
+		)
+		with self.assertRaises(LookupError) as caught:
+			info._getBoundingRectFromOffset(0)
+		self.assertIsInstance(caught.exception.__cause__, comtypes.COMError)
+
+
+class TestPowerPointTables(unittest.TestCase):
+	def setUp(self) -> None:
+		self.ppTable = SimpleNamespace(
+			firstRow=True,
+			firstCol=True,
+			rows=SimpleNamespace(count=3),
+			columns=SimpleNamespace(count=3),
+			cell=Mock(
+				return_value=SimpleNamespace(
+					shape=SimpleNamespace(textFrame=SimpleNamespace(textRange=Mock(text="Header\r"))),
+				),
+			),
+		)
+		self.table = _object(powerpnt.Table, ppObject=SimpleNamespace(table=self.ppTable))
+		self.cell = _object(powerpnt.TableCell, table=self.table, rowNumber=2, columnNumber=2)
+		self.document = Mock()
+		self.frame = _object(powerpnt.TableCellTextFrame, parent=self.cell, documentWindow=self.document)
+
+	def test_rowHeaderUsesTheFirstColumnOfTheCurrentRow(self) -> None:
+		self.assertEqual(self.cell.rowHeaderText, "Header")
+		self.ppTable.cell.assert_called_once_with(2, 1)
+
+	def test_columnHeaderUsesTheFirstRowOfTheCurrentColumn(self) -> None:
+		self.assertEqual(self.cell.columnHeaderText, "Header")
+		self.ppTable.cell.assert_called_once_with(1, 2)
+
+	def test_formatFlagsControlHeaderReporting(self) -> None:
+		self.ppTable.firstRow = self.ppTable.firstCol = False
+		self.assertIsNone(self.cell.rowHeaderText)
+		self.assertIsNone(self.cell.columnHeaderText)
+		self.ppTable.cell.assert_not_called()
+
+	def test_headerCellRoles(self) -> None:
+		self.cell.rowNumber = 1
+		self.assertEqual(self.cell.role, powerpnt.controlTypes.Role.TABLECOLUMNHEADER)
+		self.cell.rowNumber, self.cell.columnNumber = 2, 1
+		self.assertEqual(self.cell.role, powerpnt.controlTypes.Role.TABLEROWHEADER)
+
+	def test_tableNavigationSelectsAnInsertionPointNotTheCellText(self) -> None:
+		self.frame._moveTableCell(1, 0)
+		self.ppTable.cell.assert_called_once_with(3, 2)
+		self.ppTable.cell.return_value.shape.textFrame.textRange.characters.assert_called_once_with(1, 0)
+		self.ppTable.cell.return_value.shape.textFrame.textRange.characters.return_value.select.assert_called_once_with()
+		self.document.handleSelectionChange.assert_called_once_with()
+
+	def test_navigationAtEdgeDoesNotChangeSelection(self) -> None:
+		self.cell.rowNumber = 3
+		with patch.object(powerpnt.ui, "message") as message:
+			self.frame._moveTableCell(1, 0)
+		message.assert_called_once_with("edge of table")
+		self.ppTable.cell.assert_not_called()
+		self.document.handleSelectionChange.assert_not_called()
+
+	def test_tableNavigationScriptsUseTheExpectedAxis(self) -> None:
+		for script, delta in [
+			("nextRow", (1, 0)),
+			("previousRow", (-1, 0)),
+			("nextColumn", (0, 1)),
+			("previousColumn", (0, -1)),
+		]:
+			with self.subTest(script=script), patch.object(self.frame, "_moveTableCell") as move:
+				getattr(self.frame, f"script_{script}")(None)
+				move.assert_called_once_with(*delta)
