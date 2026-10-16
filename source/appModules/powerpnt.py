@@ -29,6 +29,7 @@ import ui
 import winUser
 from comtypes.automation import IDispatch
 from controlTypes import TextPosition
+from controlTypes.formatFields import TextAlign
 from cursorManager import ReviewCursorManager
 from displayModel import DisplayModelTextInfo, EditableTextDisplayModelTextInfo
 from locationHelper import RectLTRB, RectLTWH
@@ -100,6 +101,17 @@ class ppEApplicationSink(comtypes.COMObject):
 
 # Bullet types
 ppBulletNumbered = 2
+
+# PpParagraphAlignment, as exposed by ParagraphFormat.Alignment.
+ppParagraphAlignmentToTextAlign = {
+	1: TextAlign.LEFT,
+	2: TextAlign.CENTER,
+	3: TextAlign.RIGHT,
+	4: TextAlign.JUSTIFY,
+	5: TextAlign.DISTRIBUTE,
+	6: TextAlign.DISTRIBUTE,
+	7: TextAlign.JUSTIFY,
+}
 
 # media types
 ppVideo = 3
@@ -270,6 +282,35 @@ def getBulletText(ppBulletFormat):
 		return chr(ppBulletFormat.character)
 
 
+def iterTextRangeParagraphs(textRange):
+	"""Yield paragraph text with its own bullet and PowerPoint line breaks normalized."""
+	for paragraph in textRange.paragraphs():
+		bullet = getBulletText(paragraph.paragraphFormat.bullet)
+		text = paragraph.text.replace("\x0b", "\n").replace("\r", "\n").rstrip()
+		text = " ".join(part for part in (bullet, text) if part)
+		if text and not text.isspace():
+			yield text
+
+
+def getSmartArtText(shape) -> str:
+	return "\n".join(
+		text
+		for node in shape.smartArt.allNodes
+		if (text := node.textFrame2.textRange.text.replace("\x0b", "\n").replace("\r", "\n").strip())
+	)
+
+
+def getNotesTextFrame(slide):
+	"""Find the notes body by placeholder type, not by a template-dependent shape index."""
+	for shape in slide.notesPage.shapes:
+		try:
+			if shape.placeholderFormat.type == ppPlaceholderBody and shape.hasTextFrame:
+				return shape.textFrame
+		except (AttributeError, comtypes.COMError):
+			continue
+	return None
+
+
 def walkPpShapeRange(ppShapeRange):
 	for ppShape in ppShapeRange:
 		if ppShape.type == msoGroup:
@@ -367,6 +408,11 @@ class DocumentWindow(PaneClassDC):
 			else:  # Generic shape
 				return Shape(windowHandle=self.windowHandle, documentWindow=self, ppObject=ppObj)
 		elif selType == ppSelectionText:  # Text frame
+			if self.ppActivePaneViewType == ppViewNotesPage and self.ppDocumentViewType == ppViewNormal:
+				frame = getNotesTextFrame(sel.slideRange[1])
+				if frame is not None:
+					return NotesTextFrame(windowHandle=self.windowHandle, documentWindow=self, ppObject=frame)
+				return None
 			# TextRange objects in Powerpoint do not allow moving/expanding.
 			# Therefore A full TextRange object must be fetched from the original TextFrame the selection is in.
 			# MS Powerpoint 2003 also throws COMErrors when there is no TextRange.parent
@@ -418,14 +464,6 @@ class DocumentWindow(PaneClassDC):
 					)
 					return obj
 			# TextRange object did not have a parent, and we're not in a table.
-			if self.ppActivePaneViewType == ppViewNotesPage and self.ppDocumentViewType == ppViewNormal:
-				# We're in the notes page in normal view
-				# The TextFrame in this case will be located in the notes page's second shape.
-				slide = sel.slideRange[1]
-				notesPage = slide.notesPage[1]
-				shape = notesPage.shapes[2]
-				ppObj = shape.textFrame
-				return NotesTextFrame(windowHandle=self.windowHandle, documentWindow=self, ppObject=ppObj)
 			if ppObj:
 				return TextFrame(windowHandle=self.windowHandle, documentWindow=self, ppObject=ppObj)
 		if selType == ppSelectionSlides:
@@ -1021,7 +1059,9 @@ class Shape(PpObject):
 
 	def _get_value(self):
 		if self.ppObject.hasTextFrame:
-			return self.ppObject.textFrame.textRange.text
+			return "\n".join(iterTextRangeParagraphs(self.ppObject.textFrame.textRange))
+		if self.ppShapeType == msoSmartArt:
+			return getSmartArtText(self.ppObject)
 
 	def _get_states(self):
 		states = super().states
@@ -1137,10 +1177,7 @@ class TextFrameTextInfo(textInfos.offsets.OffsetsTextInfo):
 		:raises ValueError: If the start index is greater than the end index.
 		"""
 		if not (start <= end):
-			raise ValueError(
-				f"start must be less than or equal to end. Got {start=}, {end=}.",
-				stack_info=True,
-			)
+			raise ValueError(f"start must be less than or equal to end. Got {start=}, {end=}.")
 		maxLength = self._getStoryLength()
 		# Having start = maxLength does not make sense, as there will be no selection if this is the case.
 		if not (0 <= start < maxLength) and clamp:
@@ -1163,7 +1200,7 @@ class TextFrameTextInfo(textInfos.offsets.OffsetsTextInfo):
 		:param end: The ending character index (zero based) of the text range.
 		:returns: The text content of the specified text range, with newline characters normalized.
 		"""
-		return self._getPptTextRange(start, end).text.replace("\x0b", "\n")
+		return self._getPptTextRange(start, end).text.replace("\x0b", "\n").replace("\r", "\n")
 
 	def _getStoryLength(self) -> int:
 		return self.obj.ppObject.textRange.length
@@ -1249,19 +1286,29 @@ class TextFrameTextInfo(textInfos.offsets.OffsetsTextInfo):
 		formatField = textInfos.FormatField()
 		curRun = None
 		if calculateOffsets:
-			curRun, startOffset, endOffset = self._getCurrentRun(self)
+			curRun, startOffset, endOffset = self._getCurrentRun(offset)
 		if not curRun:
-			curRun = self.obj.ppObject.textRange.characters(offset + 1)
+			curRun = self.obj.ppObject.textRange.characters(offset + 1, 1)
 			startOffset, endOffset = offset, self._endOffset
-		if (
-			self._startOffset == 0
-			or offset == self._startOffset
-			and self._getTextRange(offset - 1, offset).startswith("\n")
-		):
-			b = curRun.paragraphFormat.bullet
+		# A font run can span several paragraphs with different bullets or alignments.
+		paragraphIndex, paragraphStart, paragraphEnd = self._getOffsets(
+			self.obj.ppObject.textRange.paragraphs(), offset
+		)
+		paragraph = self.obj.ppObject.textRange.paragraphs(paragraphIndex + 1, 1)
+		paragraphFormat = paragraph.paragraphFormat
+		if calculateOffsets:
+			startOffset = max(startOffset, paragraphStart)
+			endOffset = min(endOffset, paragraphEnd)
+		if offset == paragraphStart:
+			b = paragraphFormat.bullet
 			bulletText = getBulletText(b)
 			if bulletText:
 				formatField["line-prefix"] = bulletText
+				formatField["line-prefix_speakAlways"] = True
+		if formatConfig.get("reportAlignment"):
+			alignment = ppParagraphAlignmentToTextAlign.get(paragraphFormat.alignment)
+			if alignment is not None:
+				formatField["text-align"] = alignment
 		font = curRun.font
 		if formatConfig["reportFontName"]:
 			formatField["font-name"] = font.name
@@ -1288,9 +1335,11 @@ class TextFrameTextInfo(textInfos.offsets.OffsetsTextInfo):
 	def _getLinkDataAtCaretPosition(self) -> _LinkData | None:
 		offset = self._getCaretOffset()
 		curRun, _startOffset, _endOffset = self._getCurrentRun(offset)
+		if curRun is None:
+			return None
 		mouseClickSetting = curRun.actionSettings(ppMouseClick)
 		if mouseClickSetting.action == ppActionHyperlink:
-			return textInfos._LinkData(
+			return _LinkData(
 				displayText=mouseClickSetting.Hyperlink.TextToDisplay,
 				destination=mouseClickSetting.Hyperlink.Address,
 			)
@@ -1418,8 +1467,8 @@ class SlideShowTreeInterceptorTextInfo(NVDAObjectTextInfo):
 		raise LookupError
 
 	def getTextWithFields(self, formatConfig: dict | None = None) -> textInfos.TextInfo.TextWithFieldsT:
-		fields = self.obj.rootNVDAObject.basicTextFields
 		text = self.obj.rootNVDAObject.basicText
+		fields = self.obj.rootNVDAObject.basicTextFields
 		out = []
 		textOffset = self._startOffset
 		for fieldOffset, field in fields:
@@ -1472,28 +1521,36 @@ class SlideShowTreeInterceptor(DocumentTreeInterceptor):
 	hadFocusOnce = False
 
 	def event_treeInterceptor_gainFocus(self):
-		braille.handler.handleGainFocus(self)
+		changed = self.rootNVDAObject.handleSlideChange(report=False)
 		self.rootNVDAObject.reportFocus()
-		self.reportNewSlide(self.hadFocusOnce)
+		self.reportNewSlide(
+			self.hadFocusOnce and not changed,
+			resetSelection=changed or not self.hadFocusOnce,
+		)
 		if not self.hadFocusOnce:
 			self.hadFocusOnce = True
 
 	def event_gainFocus(self, obj, nextHandler):
-		pass
+		if obj != self.rootNVDAObject:
+			# Native links and media controls can receive focus within the slide show.
+			nextHandler()
 
 	TextInfo = SlideShowTreeInterceptorTextInfo
 
 	def makeTextInfo(self, position):
 		return self.TextInfo(self, position)
 
-	def reportNewSlide(self, suppressSayAll: bool = False):
+	def reportNewSlide(self, suppressSayAll: bool = False, *, resetSelection: bool = True):
 		"""Reports a new slide, activating say all when appropriate.
 		:param suppressSayAll: When say all should be suppressed always, e.g.
 			because tree interceptor gets focus multiple times.
+		:param resetSelection: Reset the virtual reading position when the slide changes.
 		"""
+		if resetSelection:
+			self.makeTextInfo(textInfos.POSITION_FIRST).updateCaret()
+		braille.handler.handleGainFocus(self)
 		doSayAll = not suppressSayAll and config.conf["virtualBuffers"]["autoSayAllOnPageLoad"]
 		if doSayAll:
-			self.makeTextInfo(textInfos.POSITION_FIRST).updateCaret()
 			sayAll.SayAllHandler.readText(sayAll.CURSOR.CARET)
 		else:
 			info = self.selection
@@ -1554,15 +1611,31 @@ class SlideShowWindow(PaneClassDC):
 	value = None
 
 	def _getShapeText(self, shape, cellShape=False):
+		try:
+			if shape.decorative == -1:
+				return
+		except (AttributeError, comtypes.COMError):
+			# The flag was added in newer versions of Office.
+			pass
+		if shape.type == msoSmartArt:
+			text = getSmartArtText(shape)
+			if text:
+				yield text
+			return
 		if shape.hasTextFrame:
-			for p in shape.textFrame.textRange.paragraphs():
-				bulletText = getBulletText(p.paragraphFormat.bullet)
-				text = p.text.replace("\x0b", "\n")
-				text = text.replace("\r", "\n")
-				text = text.rstrip()
-				text = " ".join([t for t in (bulletText, text) if t])
-				if text and not text.isspace():
-					yield text
+			# An authored description is the useful text for a symbol-font glyph,
+			# whereas its underlying character (for example Webdings "q") is misleading.
+			label = shape.alternativeText
+			if label and shape.textFrame.textRange.font.name in (
+				"Wingdings",
+				"Wingdings 2",
+				"Wingdings 3",
+				"Webdings",
+				"Symbol",
+			):
+				yield label
+				return
+			yield from iterTextRangeParagraphs(shape.textFrame.textRange)
 			return
 		if cellShape:
 			return
@@ -1589,6 +1662,10 @@ class SlideShowWindow(PaneClassDC):
 				)
 			return
 		label = shape.alternativeText
+		if shapeType == msoMedia:
+			role = controlTypes.Role.VIDEO if shape.mediaType == ppVideo else controlTypes.Role.AUDIO
+			yield " ".join(part for part in (role.displayString, label) if part)
+			return
 		if not label:
 			try:
 				label = shape.title
@@ -1602,6 +1679,8 @@ class SlideShowWindow(PaneClassDC):
 				yield label
 
 	def _get_basicText(self) -> str:
+		# Fields belong to this rendering, including the completed-slide-show case.
+		fields = self.basicTextFields = []
 		if not self.currentSlide:
 			return self.name
 		chunks = []
@@ -1609,7 +1688,11 @@ class SlideShowWindow(PaneClassDC):
 		titleShape = None
 		title = ""
 		if self.notesMode:
-			ppObject = ppObject.notesPage
+			notesFrame = getNotesTextFrame(ppObject)
+			if notesFrame is not None:
+				chunks.extend(iterTextRangeParagraphs(notesFrame.textRange))
+			self.basicText = "\n".join(chunks) or _("No notes")
+			return self.basicText
 		else:
 			titleShape = self.currentSlide.titleShape
 			title = self.currentSlide.titleText
@@ -1618,7 +1701,6 @@ class SlideShowWindow(PaneClassDC):
 				chunks.append(_("Slide title: {title}").format(title=title))
 		# Maintain a list of fields and the offsets at which they occur.
 		# For now, these are only control fields that consume a space.
-		fields = self.basicTextFields = []
 		# Incrementation of textLen must include line feed added by join.
 		textLen = sum(len(chunk) + 1 for chunk in chunks)
 		hasContents = False
@@ -1650,22 +1732,27 @@ class SlideShowWindow(PaneClassDC):
 				self.basicText = _("Empty slide")
 		return self.basicText or _("Empty slide")
 
-	def handleSlideChange(self) -> None:
+	def handleSlideChange(self, *, report: bool = True) -> bool:
 		try:
 			del self.__dict__["currentSlide"]
 		except KeyError:
 			pass
-		# The window name no longer includes the title, but title changes must still be detected.
-		curSlideChangeID = (self.name, self.currentSlide.name if self.currentSlide else None)
+		slide = self.currentSlide
+		# Names and slide numbers can match in different slides or custom slide shows.
+		curSlideChangeID = (slide.ppObject.slideID, slide.name, self.notesMode) if slide else None
 		if curSlideChangeID == self._lastSlideChangeID:
-			return
+			return False
 		self._lastSlideChangeID = curSlideChangeID
 		try:
 			del self.__dict__["basicText"]
 		except KeyError:
 			pass
-		self.reportFocus()
-		self.treeInterceptor.reportNewSlide()
+		self.invalidateCache()
+		if report:
+			self.reportFocus()
+			if self.treeInterceptor:
+				self.treeInterceptor.reportNewSlide()
+		return True
 
 
 class AppModule(appModuleHandler.AppModule):
@@ -1719,7 +1806,7 @@ class AppModule(appModuleHandler.AppModule):
 
 	_ppApplicationFromROT = None
 
-	def _getPpObjectModelFromROT(self, useRPC=False):
+	def _getPpObjectModelFromROT(self, useRPC=False, *, slideShow: bool = False):
 		if not self._ppApplicationFromROT:
 			try:
 				self._ppApplicationFromROT = comHelper.getActiveObject(
@@ -1746,7 +1833,7 @@ class AppModule(appModuleHandler.AppModule):
 				isActiveSlideShow = ppSlideShowWindow.active
 			except comtypes.COMError:
 				log.debugWarning("slideShowWindow.active", exc_info=True)
-		if isActiveSlideShow:
+		if ppSlideShowWindow and (isActiveSlideShow or slideShow):
 			return ppSlideShowWindow
 		try:
 			window = pres.windows.item(1)
@@ -1756,14 +1843,15 @@ class AppModule(appModuleHandler.AppModule):
 
 	def _fetchPpObjectModelHelper(self, windowHandle=None):
 		m = None
+		slideShow = bool(windowHandle and winUser.getClassName(windowHandle) == "screenClass")
 		# Its only safe to get the object model from PowerPoint 2003 to 2010 windows.
 		# In PowerPoint 2013 protected mode it causes security/stability issues
 		if windowHandle and winUser.getClassName(windowHandle) == "paneClassDC":
 			m = self._getPpObjectModelFromWindow(windowHandle)
 		if not m:
-			m = self._getPpObjectModelFromROT(useRPC=True)
+			m = self._getPpObjectModelFromROT(useRPC=True, slideShow=slideShow)
 		if not m:
-			m = self._getPpObjectModelFromROT()
+			m = self._getPpObjectModelFromROT(slideShow=slideShow)
 		return m
 
 	def fetchPpObjectModel(self, windowHandle=None):
