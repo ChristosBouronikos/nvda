@@ -422,6 +422,11 @@ class DocumentWindow(PaneClassDC):
 			else:  # Generic shape
 				return Shape(windowHandle=self.windowHandle, documentWindow=self, ppObject=ppObj)
 		elif selType == ppSelectionText:  # Text frame
+			if self.ppActivePaneViewType == ppViewNotesPage and self.ppDocumentViewType == ppViewNormal:
+				frame = getNotesTextFrame(sel.slideRange[1])
+				if frame is not None:
+					return NotesTextFrame(windowHandle=self.windowHandle, documentWindow=self, ppObject=frame)
+				return None
 			# TextRange objects in Powerpoint do not allow moving/expanding.
 			# Therefore A full TextRange object must be fetched from the original TextFrame the selection is in.
 			# MS Powerpoint 2003 also throws COMErrors when there is no TextRange.parent
@@ -473,14 +478,6 @@ class DocumentWindow(PaneClassDC):
 					)
 					return obj
 			# TextRange object did not have a parent, and we're not in a table.
-			if self.ppActivePaneViewType == ppViewNotesPage and self.ppDocumentViewType == ppViewNormal:
-				# We're in the notes page in normal view
-				# The TextFrame in this case will be located in the notes page's second shape.
-				slide = sel.slideRange[1]
-				notesPage = slide.notesPage[1]
-				shape = notesPage.shapes[2]
-				ppObj = shape.textFrame
-				return NotesTextFrame(windowHandle=self.windowHandle, documentWindow=self, ppObject=ppObj)
 			if ppObj:
 				return TextFrame(windowHandle=self.windowHandle, documentWindow=self, ppObject=ppObj)
 		if selType == ppSelectionSlides:
@@ -1853,7 +1850,7 @@ class AppModule(appModuleHandler.AppModule):
 
 	_ppApplicationFromROT = None
 
-	def _getPpObjectModelFromROT(self, useRPC=False):
+	def _getPpObjectModelFromROT(self, useRPC=False, *, slideShow: bool = False):
 		if not self._ppApplicationFromROT:
 			try:
 				self._ppApplicationFromROT = comHelper.getActiveObject(
@@ -1880,7 +1877,7 @@ class AppModule(appModuleHandler.AppModule):
 				isActiveSlideShow = ppSlideShowWindow.active
 			except comtypes.COMError:
 				log.debugWarning("slideShowWindow.active", exc_info=True)
-		if isActiveSlideShow:
+		if ppSlideShowWindow and (isActiveSlideShow or slideShow):
 			return ppSlideShowWindow
 		try:
 			window = pres.windows.item(1)
@@ -1890,14 +1887,15 @@ class AppModule(appModuleHandler.AppModule):
 
 	def _fetchPpObjectModelHelper(self, windowHandle=None):
 		m = None
+		slideShow = bool(windowHandle and winUser.getClassName(windowHandle) == "screenClass")
 		# Its only safe to get the object model from PowerPoint 2003 to 2010 windows.
 		# In PowerPoint 2013 protected mode it causes security/stability issues
 		if windowHandle and winUser.getClassName(windowHandle) == "paneClassDC":
 			m = self._getPpObjectModelFromWindow(windowHandle)
 		if not m:
-			m = self._getPpObjectModelFromROT(useRPC=True)
+			m = self._getPpObjectModelFromROT(useRPC=True, slideShow=slideShow)
 		if not m:
-			m = self._getPpObjectModelFromROT()
+			m = self._getPpObjectModelFromROT(slideShow=slideShow)
 		return m
 
 	def fetchPpObjectModel(self, windowHandle=None):

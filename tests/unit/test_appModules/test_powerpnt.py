@@ -356,6 +356,41 @@ class TestSlideTitles(unittest.TestCase):
 		self.assertEqual(self.window.basicText, "Actual notes")
 
 
+class TestPowerPointObjectModelSelection(unittest.TestCase):
+	def test_inactiveSlideShowIsUsedForPresenterView(self) -> None:
+		show = SimpleNamespace(active=False)
+		editor = SimpleNamespace()
+		presentation = SimpleNamespace(
+			slideShowWindow=show,
+			windows=SimpleNamespace(item=lambda index: editor),
+		)
+		app = SimpleNamespace(_ppApplicationFromROT=SimpleNamespace(activePresentation=presentation))
+		self.assertIs(powerpnt.AppModule._getPpObjectModelFromROT(app, slideShow=True), show)
+		self.assertIs(powerpnt.AppModule._getPpObjectModelFromROT(app), editor)
+
+	def test_notesSelectionDoesNotDependOnSecondShape(self) -> None:
+		notes = _textShape(5, "Notes")
+		notes.placeholderFormat = SimpleNamespace(type=powerpnt.ppPlaceholderBody)
+		slide = SimpleNamespace(
+			notesPage=SimpleNamespace(shapes=[_textShape(1, ""), _textShape(2, ""), notes]),
+		)
+		document = _object(
+			powerpnt.DocumentWindow,
+			windowHandle=1,
+			ppActivePaneViewType=powerpnt.ppViewNotesPage,
+			ppDocumentViewType=powerpnt.ppViewNormal,
+			ppVersionMajor=16,
+			ppSelection=SimpleNamespace(type=powerpnt.ppSelectionText, slideRange={1: slide}),
+		)
+		with patch.object(powerpnt, "NotesTextFrame") as cls:
+			self.assertIs(document.selection, cls.return_value)
+		cls.assert_called_once_with(
+			windowHandle=document.windowHandle,
+			documentWindow=document,
+			ppObject=notes.textFrame,
+		)
+
+
 class TestSlideShowFocus(unittest.TestCase):
 	def setUp(self) -> None:
 		self.window = Mock()

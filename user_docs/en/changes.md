@@ -40,6 +40,7 @@
 * In PowerPoint slide shows, returning from the slide chooser refreshes the slide, resets reading to its start, and updates braille even when automatic reading is disabled. (#17605, #11714, #13471, @ChristosBouronikos)
 * Fixed an error when reading a PowerPoint slide before its text fields were initialized. (#17850, @ChristosBouronikos)
 * PowerPoint slide-show reading now includes SmartArt node text, labels unlabelled audio and video, respects descriptions on symbol-font text boxes, and skips decorative shapes. (#10770, #9666, #10771, #13422, @ChristosBouronikos)
+* PowerPoint speaker notes are located by their notes-body placeholder rather than a fixed shape position, and inactive presenter slide-show windows no longer fall back to the editing view. (#7937, #7875, #10907, @ChristosBouronikos)
 * In Microsoft PowerPoint, NVDA no longer reads the slide title twice. (#9379, @ChristosBouronikos)
   * The slide title is now announced with a "Slide title" label, and the rest of the slide is introduced with "Slide contents".
 * Fixed an issue where formulas and notes were not listed in Excel's elements list when it was opened from a sheet with multiple cells selected. (#20806, @CyrilleB79)
